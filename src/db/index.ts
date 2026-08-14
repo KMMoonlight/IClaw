@@ -18,19 +18,14 @@ export interface User {
   createdAt: number;
 }
 
-export interface Binding {
-  wechatId: string;
-  userId: string;
+export interface BotBinding {
+  /** iLink bot 账号 id（归一化后的 ilink_bot_id）。 */
   accountId: string;
+  /** 绑定到的用户。 */
+  userId: string;
+  /** 扫码者本人的微信 id（ilink_user_id）。 */
+  wechatUserId: string;
   createdAt: number;
-}
-
-export interface Invite {
-  code: string;
-  userId: string | null;
-  status: "pending" | "used" | "revoked";
-  createdAt: number;
-  boundAt: number | null;
 }
 
 export interface Admin {
@@ -49,19 +44,13 @@ CREATE TABLE IF NOT EXISTS users (
   status TEXT NOT NULL DEFAULT 'active',
   created_at INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS bindings (
-  wechat_id TEXT PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS bot_bindings (
+  account_id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
-  account_id TEXT NOT NULL,
+  wechat_user_id TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS invites (
-  code TEXT PRIMARY KEY,
-  user_id TEXT,
-  status TEXT NOT NULL DEFAULT 'pending',
-  created_at INTEGER NOT NULL,
-  bound_at INTEGER
-);
+CREATE INDEX IF NOT EXISTS idx_bot_bindings_user ON bot_bindings (user_id);
 CREATE TABLE IF NOT EXISTS sessions (
   user_id TEXT PRIMARY KEY,
   messages_json TEXT NOT NULL DEFAULT '[]',
@@ -152,88 +141,45 @@ export function appendUserMemory(id: string, fact: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// bindings
+// bot bindings（扫码即绑定：一个 iLink bot 账号 ↔ 一个用户）
 // ---------------------------------------------------------------------------
 
-export function getBindingByWechat(wechatId: string): Binding | null {
-  const r = openDb().prepare("SELECT * FROM bindings WHERE wechat_id = ?").get(wechatId) as
+function rowToBinding(r: Record<string, unknown>): BotBinding {
+  return {
+    accountId: r.account_id as string,
+    userId: r.user_id as string,
+    wechatUserId: (r.wechat_user_id as string) ?? "",
+    createdAt: r.created_at as number,
+  };
+}
+
+export function bindBotAccount(accountId: string, userId: string, wechatUserId: string): void {
+  openDb()
+    .prepare("INSERT OR REPLACE INTO bot_bindings (account_id, user_id, wechat_user_id, created_at) VALUES (?, ?, ?, ?)")
+    .run(accountId, userId, wechatUserId, Date.now());
+}
+
+export function getBindingByAccount(accountId: string): BotBinding | null {
+  const r = openDb().prepare("SELECT * FROM bot_bindings WHERE account_id = ?").get(accountId) as
     | Record<string, unknown>
     | undefined;
-  if (!r) return null;
-  return {
-    wechatId: r.wechat_id as string,
-    userId: r.user_id as string,
-    accountId: r.account_id as string,
-    createdAt: r.created_at as number,
-  };
+  return r ? rowToBinding(r) : null;
 }
 
-export function bindWechat(wechatId: string, userId: string, accountId: string): void {
-  openDb()
-    .prepare("INSERT OR REPLACE INTO bindings (wechat_id, user_id, account_id, created_at) VALUES (?, ?, ?, ?)")
-    .run(wechatId, userId, accountId, Date.now());
+export function getBindingByUser(userId: string): BotBinding | null {
+  const r = openDb().prepare("SELECT * FROM bot_bindings WHERE user_id = ?").get(userId) as
+    | Record<string, unknown>
+    | undefined;
+  return r ? rowToBinding(r) : null;
 }
 
-export function unbindWechat(wechatId: string): void {
-  openDb().prepare("DELETE FROM bindings WHERE wechat_id = ?").run(wechatId);
+export function unbindBotAccount(accountId: string): void {
+  openDb().prepare("DELETE FROM bot_bindings WHERE account_id = ?").run(accountId);
 }
 
-export function listBindings(): Binding[] {
-  const rows = openDb().prepare("SELECT * FROM bindings ORDER BY created_at").all() as Record<string, unknown>[];
-  return rows.map((r) => ({
-    wechatId: r.wechat_id as string,
-    userId: r.user_id as string,
-    accountId: r.account_id as string,
-    createdAt: r.created_at as number,
-  }));
-}
-
-// ---------------------------------------------------------------------------
-// invites
-// ---------------------------------------------------------------------------
-
-export function createInvite(code: string, userId: string | null): Invite {
-  const d = openDb();
-  const invite: Invite = { code, userId, status: "pending", createdAt: Date.now(), boundAt: null };
-  d.prepare("INSERT INTO invites (code, user_id, status, created_at, bound_at) VALUES (?, ?, ?, ?, ?)").run(
-    invite.code,
-    invite.userId,
-    invite.status,
-    invite.createdAt,
-    invite.boundAt,
-  );
-  return invite;
-}
-
-export function getInvite(code: string): Invite | null {
-  const r = openDb().prepare("SELECT * FROM invites WHERE code = ?").get(code) as Record<string, unknown> | undefined;
-  if (!r) return null;
-  return {
-    code: r.code as string,
-    userId: (r.user_id as string) ?? null,
-    status: r.status as Invite["status"],
-    createdAt: r.created_at as number,
-    boundAt: (r.bound_at as number) ?? null,
-  };
-}
-
-export function markInviteUsed(code: string, userId: string): void {
-  openDb().prepare("UPDATE invites SET status = 'used', user_id = ?, bound_at = ? WHERE code = ?").run(userId, Date.now(), code);
-}
-
-export function revokeInvite(code: string): void {
-  openDb().prepare("UPDATE invites SET status = 'revoked' WHERE code = ?").run(code);
-}
-
-export function listInvites(): Invite[] {
-  const rows = openDb().prepare("SELECT * FROM invites ORDER BY created_at").all() as Record<string, unknown>[];
-  return rows.map((r) => ({
-    code: r.code as string,
-    userId: (r.user_id as string) ?? null,
-    status: r.status as Invite["status"],
-    createdAt: r.created_at as number,
-    boundAt: (r.bound_at as number) ?? null,
-  }));
+export function listBotBindings(): BotBinding[] {
+  const rows = openDb().prepare("SELECT * FROM bot_bindings ORDER BY created_at").all() as Record<string, unknown>[];
+  return rows.map(rowToBinding);
 }
 
 // ---------------------------------------------------------------------------

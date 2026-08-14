@@ -7,6 +7,7 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { Type } from "@earendil-works/pi-ai";
 import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
+import { z } from "zod";
 
 import { loadConfig } from "../config.js";
 import { logger } from "../logger.js";
@@ -22,6 +23,26 @@ export interface McpServerConfig {
 interface McpConfigFile {
   mcpServers?: Record<string, McpServerConfig>;
 }
+
+/** Runtime validation for the PUT /api/mcp body (admin UI saves mcp.json). */
+export const mcpServersSchema = z
+  .object({
+    servers: z
+      .record(
+        z.string().min(1),
+        z
+          .object({
+            command: z.string().min(1).optional(),
+            args: z.array(z.string()).optional(),
+            url: z.string().url().optional(),
+            env: z.record(z.string(), z.string()).optional(),
+            disabled: z.boolean().optional(),
+          })
+          .strict(),
+      )
+      .default({}),
+  })
+  .strict();
 
 /** Load MCP server config from config.mcpConfigPath (`.mcp.json` format). */
 export function loadMcpServers(): Record<string, McpServerConfig> {

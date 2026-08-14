@@ -66,7 +66,7 @@ function apiKindFor(provider: string): ApiKind {
   return PROVIDERS[provider]?.api ?? "openai-completions";
 }
 
-function resolveBaseUrl(provider: string, override?: string): string {
+export function resolveBaseUrl(provider: string, override?: string): string {
   if (override) return override;
   const spec = PROVIDERS[provider];
   if (spec) return spec.baseUrl;
@@ -116,10 +116,10 @@ function buildCustomProvider(): Provider {
     provider: PROVIDER_ID,
     baseUrl,
     reasoning: false,
-    input: ["text", "image"],
+    input: cfg.modelSupportsImages ? ["text", "image"] : ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 128_000,
-    maxTokens: 8192,
+    contextWindow: cfg.modelContextWindow,
+    maxTokens: cfg.modelMaxTokens,
   };
   return createProvider({
     id: PROVIDER_ID,
@@ -150,4 +150,9 @@ export function resolveConfiguredModel(): Model<any> {
     throw new Error(`Model not found: ${cfg.model.model} — check ICLAW_MODEL in .env`);
   }
   return m;
+}
+
+/** Whether the configured model accepts image input (ICLAW_MODEL_SUPPORTS_IMAGES). */
+export function supportsImages(): boolean {
+  return loadConfig().modelSupportsImages;
 }

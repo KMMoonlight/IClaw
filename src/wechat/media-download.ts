@@ -26,6 +26,27 @@ function saveMediaToTemp(buf: Buffer, ext: string): { path: string } {
   return { path: filePath };
 }
 
+/** Delete inbound media files older than `maxAgeMs` (default 7 days). Best-effort. */
+export function purgeStaleInboundMedia(maxAgeMs: number = 7 * 24 * 60 * 60 * 1000): void {
+  const dir = inboundMediaDir();
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return; // no media dir yet
+  }
+  const cutoff = Date.now() - maxAgeMs;
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const filePath = path.join(dir, entry.name);
+    try {
+      if (fs.statSync(filePath).mtimeMs < cutoff) fs.rmSync(filePath, { force: true });
+    } catch {
+      // best-effort cleanup
+    }
+  }
+}
+
 /**
  * Download + decrypt an inbound IMAGE item. Returns media info, or null when
  * the item is not an image or has no usable CDN reference / key.

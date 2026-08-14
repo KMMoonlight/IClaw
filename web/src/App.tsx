@@ -6,7 +6,8 @@ interface User {
   persona: string;
   memory: string;
   status: "active" | "frozen";
-  binding: string | null;
+  botAccount: string | null;
+  wechatUserId: string | null;
 }
 
 interface Skill {
@@ -24,6 +25,17 @@ interface McpServer {
 interface McpConfig {
   servers: Record<string, { command?: string; args?: string[]; url?: string; disabled?: boolean }>;
   status: McpServer[];
+}
+
+interface BindStatus {
+  phase: string;
+  message: string;
+  qrSvg?: string | null;
+  verifyRequired?: boolean;
+  connected?: boolean;
+  bound?: boolean;
+  accountId?: string;
+  wechatUserId?: string;
 }
 
 async function api<T>(path: string, opts: RequestInit = {}): Promise<T> {
@@ -72,9 +84,100 @@ function Login({ onLogin }: { onLogin: () => void }) {
   );
 }
 
+function BindModal({ user, onClose, onBound }: { user: User; onClose: () => void; onBound: () => void }) {
+  const [status, setStatus] = useState<BindStatus | null>(null);
+  const [code, setCode] = useState("");
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    let stopped = false;
+    void api<BindStatus>(`/api/users/${user.id}/bind`, { method: "POST" })
+      .then((s) => { if (!stopped) setStatus(s); })
+      .catch((e) => { if (!stopped) setErr(e instanceof Error ? e.message : String(e)); });
+
+    const timer = setInterval(() => {
+      api<BindStatus>(`/api/users/${user.id}/bind/status`)
+        .then((s) => {
+          if (stopped) return;
+          setStatus(s);
+          if (s.connected && s.bound) {
+            clearInterval(timer);
+            onBound();
+          }
+        })
+        .catch(() => { /* transient; keep polling */ });
+    }, 2000);
+
+    const cancelOnLeave = () => {
+      void api(`/api/users/${user.id}/bind/cancel`, { method: "POST" }).catch(() => {});
+    };
+    window.addEventListener("beforeunload", cancelOnLeave);
+
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+      window.removeEventListener("beforeunload", cancelOnLeave);
+    };
+  }, [user.id, onBound]);
+
+  const submitCode = async () => {
+    if (!code.trim()) return;
+    await api(`/api/users/${user.id}/bind/verify`, { method: "POST", body: JSON.stringify({ code }) });
+    setCode("");
+  };
+
+  const cancel = async () => {
+    await api(`/api/users/${user.id}/bind/cancel`, { method: "POST" }).catch(() => {});
+    onClose();
+  };
+
+  const done = status?.connected && status.bound;
+
+  return (
+    <div className="overlay" onClick={(e) => { if (e.target === e.currentTarget) void cancel(); }}>
+      <div className="modal card">
+        <h2>绑定微信（{user.name}）</h2>
+        {err && <div className="err">{err}</div>}
+        {!err && status?.qrSvg && (
+          <div className="qr-wrap" dangerouslySetInnerHTML={{ __html: status.qrSvg }} />
+        )}
+        {!err && status && !status.qrSvg && done && <div className="success">✅ 绑定成功</div>}
+        {!err && status && (
+          <p className={`muted ${status.phase === "need_verifycode" ? "err" : ""}`} style={{ textAlign: "center" }}>
+            {status.message}
+          </p>
+        )}
+        {!err && status?.verifyRequired && (
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            <input
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              placeholder="输入手机微信上显示的数字"
+              autoFocus
+            />
+            <button className="primary" onClick={submitCode}>提交</button>
+          </div>
+        )}
+        <div className="modal-help muted">
+          让用户用手机微信扫描二维码，并在手机上确认授权。<br />
+          扫码后其微信中会出现一个专属 Bot 好友，与之聊天即与 Pi 对话。
+        </div>
+        {done && (
+          <div className="success">
+            绑定成功：Bot 账号 {status?.accountId ?? ""}（微信 {status?.wechatUserId ?? ""}）
+          </div>
+        )}
+        <div style={{ marginTop: 16, display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button onClick={done ? onClose : cancel}>{done ? "关闭" : "取消"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function UsersTab() {
   const [users, setUsers] = useState<User[]>([]);
-  const [invite, setInvite] = useState<{ code: string; name: string } | null>(null);
+  const [bindUser, setBindUser] = useState<User | null>(null);
   const [name, setName] = useState("");
   const [persona, setPersona] = useState("");
   const [err, setErr] = useState("");
@@ -103,9 +206,10 @@ function UsersTab() {
     reload();
   };
 
-  const genInvite = async (u: User) => {
-    const r = await api<{ code: string }>(`/api/users/${u.id}/invite`, { method: "POST" });
-    setInvite({ code: r.code, name: u.name });
+  const unbind = async (u: User) => {
+    if (!window.confirm(`确定解除 ${u.name} 的微信绑定吗？其微信中的 Bot 好友将不再响应。`)) return;
+    await api(`/api/users/${u.id}/unbind`, { method: "POST" });
+    reload();
   };
 
   const editPersona = async (u: User) => {
@@ -135,18 +239,11 @@ function UsersTab() {
         {err && <div className="err">{err}</div>}
       </div>
 
-      {invite && (
-        <div className="card">
-          <b>邀请码已生成</b>（用户 {invite.name}）：<span className="code">{invite.code}</span>
-          <p className="muted">让该用户用微信给机器人发送这个邀请码即可绑定。</p>
-        </div>
-      )}
-
       <div className="card">
         <h2>用户</h2>
         <table>
           <thead>
-            <tr><th>名称</th><th>人设</th><th>状态</th><th>绑定微信</th><th>操作</th></tr>
+            <tr><th>名称</th><th>人设</th><th>状态</th><th>绑定 Bot</th><th>操作</th></tr>
           </thead>
           <tbody>
             {users.map((u) => (
@@ -154,10 +251,18 @@ function UsersTab() {
                 <td>{u.name}</td>
                 <td className="muted">{u.persona || "—"}</td>
                 <td><span className={`badge ${u.status}`}>{u.status === "active" ? "正常" : "已冻结"}</span></td>
-                <td className="muted">{u.binding ?? "未绑定"}</td>
+                <td className="muted">
+                  {u.botAccount
+                    ? <span className="code">{u.botAccount}</span>
+                    : "未绑定"}
+                  {u.wechatUserId ? <div style={{ fontSize: 12 }}>{u.wechatUserId}</div> : null}
+                </td>
                 <td>
-                  <div style={{ display: "flex", gap: 6 }}>
-                    <button className="small" onClick={() => genInvite(u)}>邀请码</button>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {u.botAccount
+                      ? <button className="small" onClick={() => setBindUser(u)}>重新绑定</button>
+                      : <button className="small primary" onClick={() => setBindUser(u)}>绑定二维码</button>}
+                    {u.botAccount && <button className="small danger" onClick={() => unbind(u)}>解绑</button>}
                     <button className="small" onClick={() => editPersona(u)}>编辑人设</button>
                     <button className={`small ${u.status === "active" ? "danger" : ""}`} onClick={() => toggleStatus(u)}>
                       {u.status === "active" ? "冻结" : "解冻"}
@@ -168,7 +273,18 @@ function UsersTab() {
             ))}
           </tbody>
         </table>
+        <p className="muted" style={{ marginTop: 12 }}>
+          绑定流程：点「绑定二维码」→ 用户用手机微信扫码并确认 → 其微信中出现专属 Bot 好友，与之聊天即与 Pi 对话（会话/人设/记忆按用户隔离）。
+        </p>
       </div>
+
+      {bindUser && (
+        <BindModal
+          user={bindUser}
+          onClose={() => setBindUser(null)}
+          onBound={() => { void reload(); }}
+        />
+      )}
     </div>
   );
 }
@@ -198,6 +314,7 @@ function SkillsTab() {
   };
 
   const remove = async (n: string) => {
+    if (!window.confirm(`确定删除技能「${n}」吗？`)) return;
     await api(`/api/skills/${encodeURIComponent(n)}`, { method: "DELETE" });
     reload();
   };

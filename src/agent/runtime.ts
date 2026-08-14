@@ -3,20 +3,31 @@ import fs from "node:fs";
 import { Agent } from "@earendil-works/pi-agent-core";
 import { contentText } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
 
 import { loadConfig } from "../config.js";
 import { getUser, loadMessagesJson, saveMessagesJson } from "../db/index.js";
+import { logger } from "../logger.js";
 import type { User } from "../db/index.js";
 import type { InboundContext } from "../wechat/inbound.js";
 import { buildMcpTools } from "./mcp.js";
-import { getModels, resolveConfiguredModel } from "./models.js";
+import { getModels, resolveConfiguredModel, supportsImages } from "./models.js";
 import { resetSkillsCache, skillsPrompt } from "./skills.js";
 import { buildTools } from "./tools.js";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
 
 /** One Agent instance per user, sharing model/tools/system-prompt shape but with isolated transcripts. */
 const agents = new Map<string, Agent>();
+/** Last time each agent processed a turn, for idle eviction. */
+const lastUsed = new Map<string, number>();
+/** Per-user turn chains: Agent.prompt rejects concurrent calls, so turns for one user run one at a time. */
+const turnChains = new Map<string, Promise<unknown>>();
+
+/** Evict an agent that has been idle this long (transcript stays persisted in the DB). */
+const AGENT_IDLE_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** Max messages persisted per user; older turns are trimmed at the next user-message boundary. */
+export const TRANSCRIPT_MAX_MESSAGES = 200;
 
 /** Shared (non-user-bound) tools: MCP tools built once at startup. */
 let sharedTools: AgentTool<any>[] = [];
@@ -36,9 +47,11 @@ function buildSystemPrompt(user: User): string {
   return parts.join("\n\n");
 }
 
-function fileToImageContent(filePath: string): ImageContent[] {
+function fileToImageContent(filePath: string, mediaType?: string): ImageContent[] {
   const data = fs.readFileSync(filePath).toString("base64");
-  return [{ type: "image", data, mimeType: "image/jpeg" }];
+  // media.type is usually "image/*"; only pass through concrete mime types.
+  const mimeType = mediaType && /^image\/[a-z0-9.+-]+$/i.test(mediaType) ? mediaType : "image/jpeg";
+  return [{ type: "image", data, mimeType }];
 }
 
 function lastAssistantText(agent: Agent): string {
@@ -53,14 +66,44 @@ function lastAssistantText(agent: Agent): string {
   return "";
 }
 
+/**
+ * Trim the transcript to at most `max` messages, cutting at a user-message
+ * boundary so the remaining tail stays structurally valid for the model
+ * (never starts with an orphaned tool result).
+ */
+export function trimMessages(msgs: AgentMessage[], max: number): AgentMessage[] {
+  if (msgs.length <= max) return msgs;
+  let start = msgs.length - max;
+  for (let i = start; i < msgs.length; i++) {
+    if (msgs[i]?.role === "user") {
+      start = i;
+      break;
+    }
+  }
+  return msgs.slice(start);
+}
+
+function sweepIdleAgents(now: number): void {
+  for (const [userId, agent] of agents) {
+    const used = lastUsed.get(userId) ?? 0;
+    if (now - used > AGENT_IDLE_TTL_MS) {
+      agents.delete(userId);
+      lastUsed.delete(userId);
+      void agent;
+    }
+  }
+}
+
 export async function getOrCreateAgent(userId: string): Promise<Agent> {
+  sweepIdleAgents(Date.now());
   const existing = agents.get(userId);
   if (existing) return existing;
 
   const user = getUser(userId);
   if (!user) throw new Error(`user not found: ${userId}`);
 
-  const messages = JSON.parse(loadMessagesJson(userId)) as AgentMessage[];
+  const parsed = JSON.parse(loadMessagesJson(userId)) as AgentMessage[];
+  const messages = trimMessages(Array.isArray(parsed) ? parsed : [], TRANSCRIPT_MAX_MESSAGES);
   const models = getModels();
   const agent = new Agent({
     initialState: {
@@ -78,20 +121,53 @@ export async function getOrCreateAgent(userId: string): Promise<Agent> {
 
 export function dropAgent(userId: string): void {
   agents.delete(userId);
+  lastUsed.delete(userId);
 }
 
 export function dropAllAgents(): void {
   agents.clear();
+  lastUsed.clear();
 }
 
-/** Run one agent turn for a bound, active user. Returns the assistant's reply text. */
-export async function runAgentTurn(userId: string, ctx: InboundContext): Promise<string> {
+/**
+ * Run one agent turn for a bound, active user. Returns the assistant's reply text.
+ * Turns for the same user are serialized: Agent.prompt rejects concurrent calls,
+ * and multiple WeChat accounts may deliver messages for one user in parallel.
+ */
+export function runAgentTurn(userId: string, ctx: InboundContext): Promise<string> {
+  const prev = turnChains.get(userId) ?? Promise.resolve();
+  const next = prev.then(() => runAgentTurnInner(userId, ctx));
+  // Keep the chain alive even after failures; the caller receives the real error.
+  turnChains.set(userId, next.catch(() => undefined));
+  return next;
+}
+
+async function runAgentTurnInner(userId: string, ctx: InboundContext): Promise<string> {
   const agent = await getOrCreateAgent(userId);
+  lastUsed.set(userId, Date.now());
   const user = getUser(userId)!;
   // Refresh persona/memory each turn so newly-remembered facts take effect immediately.
   agent.state.systemPrompt = buildSystemPrompt(user);
-  const images = ctx.media ? fileToImageContent(ctx.media.path) : undefined;
-  await agent.prompt(ctx.body.trim() || "(empty)", images);
+
+  let body = ctx.body.trim() || "(empty)";
+  let images: ImageContent[] | undefined;
+  if (ctx.media) {
+    if (supportsImages()) {
+      images = fileToImageContent(ctx.media.path, ctx.media.type);
+    } else {
+      body = `[图片消息：当前模型不支持图片输入]\n${body}`;
+    }
+  }
+
+  await agent.prompt(body, images);
+  const messages = trimMessages(agent.state.messages, TRANSCRIPT_MAX_MESSAGES);
+  if (messages !== agent.state.messages) {
+    try {
+      agent.state.messages = messages;
+    } catch (err) {
+      logger.warn(`runtime: failed to trim in-memory transcript for ${userId}: ${String(err)}`);
+    }
+  }
   saveMessagesJson(userId, JSON.stringify(agent.state.messages));
   return lastAssistantText(agent);
 }

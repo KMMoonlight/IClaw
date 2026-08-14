@@ -6,21 +6,9 @@ export function generateId(prefix: string): string {
   return `${prefix}-${hex}`;
 }
 
-/** Generate a random token (e.g. invite code / session token). */
+/** Generate a random token (e.g. session token). */
 export function randomToken(bytes = 16): string {
   return crypto.randomBytes(bytes).toString("hex");
-}
-
-const INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no I/O/0/1
-
-/** Generate a short, unambiguous, case-insensitive invite code. */
-export function generateInviteCode(length = 8): string {
-  const bytes = crypto.randomBytes(length);
-  let code = "";
-  for (let i = 0; i < length; i++) {
-    code += INVITE_ALPHABET[bytes[i]! % INVITE_ALPHABET.length];
-  }
-  return code;
 }
 
 /** Constant-time string comparison (for password/session checks). */

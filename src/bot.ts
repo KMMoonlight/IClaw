@@ -1,19 +1,14 @@
 import { runAgentTurn } from "./agent/runtime.js";
-import {
-  bindWechat,
-  getBindingByWechat,
-  getInvite,
-  getUser,
-  markInviteUsed,
-} from "./db/index.js";
+import { getBindingByAccount, getUser } from "./db/index.js";
+import { logger } from "./logger.js";
 import { resolveWeixinAccount } from "./wechat/accounts.js";
 import { getContextToken } from "./wechat/context-token.js";
 import type { InboundContext } from "./wechat/inbound.js";
 import { sendTextMessage } from "./wechat/send.js";
 
 /**
- * The bot's inbound handler: route by binding, run the agent for known users,
- * and drive the invite flow for unknown ones.
+ * The bot's inbound handler. Each bot account is 1:1 bound to a user
+ * (扫码即绑定), so routing is: accountId → user → per-user Pi agent.
  */
 export function createBotHandler(): (ctx: InboundContext) => Promise<void> {
   return async (ctx) => {
@@ -26,30 +21,24 @@ export function createBotHandler(): (ctx: InboundContext) => Promise<void> {
         opts: { baseUrl: account.baseUrl, token: account.token, contextToken },
       });
 
-    const binding = getBindingByWechat(ctx.from);
-    if (binding) {
-      const user = getUser(binding.userId);
-      if (!user || user.status !== "active") return; // frozen or missing → silent
-      try {
-        const reply = await runAgentTurn(user.id, ctx);
-        if (reply) await send(reply);
-      } catch (err) {
-        await send(`处理出错：${err instanceof Error ? err.message : String(err)}`);
-      }
+    const binding = getBindingByAccount(ctx.accountId);
+    if (!binding) {
+      await send("此 Bot 账号尚未绑定用户，请联系管理员完成绑定。");
       return;
     }
 
-    // Unbound sender → invite flow.
-    const code = ctx.body.trim();
-    const invite = code ? getInvite(code.toUpperCase()) : null;
-    if (invite && invite.status === "pending" && invite.userId) {
-      bindWechat(ctx.from, invite.userId, ctx.accountId);
-      markInviteUsed(invite.code, invite.userId);
-      const user = getUser(invite.userId);
-      await send(`✅ 绑定成功${user ? `，欢迎 ${user.name}` : ""}！现在可以开始对话了。`);
-      return;
-    }
+    const user = getUser(binding.userId);
+    if (!user || user.status !== "active") return; // frozen or missing → silent
 
-    await send("你好！你还没有绑定账号。请向管理员索取邀请码，然后直接回复邀请码即可开始使用。");
+    try {
+      const reply = await runAgentTurn(user.id, ctx);
+      if (reply) await send(reply);
+    } catch (err) {
+      // Log the detail internally; never leak raw errors to the user.
+      logger.error(
+        `bot: turn failed for user=${user.id} from=${ctx.from}: ${err instanceof Error ? err.stack ?? err.message : String(err)}`,
+      );
+      await send("处理出错，请稍后再试。");
+    }
   };
 }

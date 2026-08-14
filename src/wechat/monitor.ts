@@ -1,4 +1,6 @@
 // Adapted from Tencent/openclaw-weixin (MIT License). See docs/THIRD_PARTY_NOTICES.md.
+import fs from "node:fs";
+
 import { getUpdates, classifyFetchError } from "./api.js";
 import { findImageItem, weixinMessageToContext } from "./inbound.js";
 import type { InboundContext } from "./inbound.js";
@@ -94,7 +96,19 @@ export async function monitorWeixin(opts: MonitorOpts): Promise<void> {
 
         const ctx = weixinMessageToContext(msg, accountId, media);
         aLog.info(`inbound from=${from} body=${ctx.body.slice(0, 80)} media=${Boolean(media)}`);
-        await onMessage(ctx);
+        try {
+          await onMessage(ctx);
+        } finally {
+          // The media file only exists to serve this one turn; free it afterwards
+          // (echo mode and the bot handler both get a chance to read it first).
+          if (ctx.media) {
+            try {
+              fs.unlinkSync(ctx.media.path);
+            } catch {
+              // best-effort; stale files are also purged at channel startup
+            }
+          }
+        }
       }
     } catch (err) {
       if (abortSignal?.aborted) {
