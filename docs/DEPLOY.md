@@ -69,7 +69,26 @@ journalctl -u iclaw -f        # 看日志（含首次管理员密码）
 
 升级：`git pull && npm ci && npm run build && npm run web:build && systemctl restart iclaw`。
 
-## 4. 对外暴露管理端（可选）
+## 4. 部署方式 C：PaaS（Zeabur / Railway / Render 等）
+
+⚠️ 这些平台的容器文件系统是**临时的**，重启即清空。必须把状态目录挂到平台提供的持久卷上：
+
+1. 在平台的服务设置里添加持久卷（Zeabur：服务 → Storage），挂载路径任选，例如 `/data`。
+2. 在服务的环境变量里显式指向卷：
+
+```ini
+ICLAW_STATE_DIR=/data
+ICLAW_ADMIN_PASSWORD=<固定管理员密码>   # 必须设，否则数据丢失时管理员账号也重建
+ICLAW_MCP_CONFIG=/data/mcp.json       # 可选：让 Web 端改的 MCP 配置持久化
+ICLAW_SKILLS_DIR=/data/skills         # 可选：让 Web 端管理的技能持久化
+```
+
+3. 重新部署使挂载生效。之后重启数据不丢；**备份 = 定期下载平台的卷快照**。
+
+数据已丢的恢复：登录管理端 → 每个用户「重新绑定」重新扫码（用户微信里旧的 Bot 好友可能仍在，
+重扫若提示「已连接过此实例」，需联系开发处理网关侧复用逻辑）。
+
+## 5. 对外暴露管理端（可选）
 
 默认管理端只监听 `127.0.0.1:3000`，最安全的远程访问方式是 **SSH 隧道**：
 
@@ -94,7 +113,7 @@ ICLAW_COOKIE_SECURE=true     # HTTPS 下会话 cookie 加 Secure 标志
 
 > 不要在没有 HTTPS 的情况下把管理端裸暴露到公网——管理员会话 cookie 会明文传输。
 
-## 5. 首次上线清单
+## 6. 首次上线清单
 
 1. 打开管理端 → 用管理员账号登录。
 2. 「用户」页新建用户 → 点「绑定二维码」→ 把二维码截图发给该用户（**二维码 5 分钟有效**，
@@ -104,7 +123,7 @@ ICLAW_COOKIE_SECURE=true     # HTTPS 下会话 cookie 加 Secure 标志
 4. 有问题时看日志：`docker compose logs -f` 或 `journalctl -u iclaw -f`。
 5. 给用户讲两个命令：发 `/new` 开启新会话；管理员可随时在 Web 冻结用户。
 
-## 6. 运维
+## 7. 运维
 
 **备份**（务必定期做，微信登录凭证不可重新推导）：
 
@@ -117,7 +136,7 @@ tar czf iclaw-backup-$(date +%F).tar.gz .env data/
 
 **多账号**：每个用户各绑定一个 bot 账号，互不影响；`iclaw status` 可看绑定关系。
 
-## 7. 常见问题
+## 8. 常见问题
 
 | 现象 | 处理 |
 |------|------|
@@ -127,7 +146,7 @@ tar czf iclaw-backup-$(date +%F).tar.gz .env data/
 | 图片/媒体收不到 | 需要模型支持图片（`ICLAW_MODEL_SUPPORTS_IMAGES=true`），纯文本模型会把图片转成文字提示 |
 | SQLite 目录权限 | 容器内挂载目录需可写；裸机注意 systemd 用户权限 |
 
-## 8. ⚠️ 合规与封号风险
+## 9. ⚠️ 合规与封号风险
 
 本项目走腾讯官方 iLink 网关，但本质仍是「个人微信账号自动化」，每个用户绑定的是其**本人的
 微信号**。请确保用户知情同意，控制使用规模，并自行评估微信相关条款。`botAgent` 自报

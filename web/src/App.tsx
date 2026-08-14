@@ -45,8 +45,10 @@ async function api<T>(path: string, opts: RequestInit = {}): Promise<T> {
   if (opts.body !== undefined) headers["Content-Type"] = "application/json";
   const res = await fetch(path, { ...opts, headers });
   if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error ?? `HTTP ${res.status}`);
+    const body = (await res.json().catch(() => ({}))) as { error?: string; details?: { fieldErrors?: Record<string, unknown> } };
+    const fieldErrors = body.details?.fieldErrors;
+    const detail = fieldErrors && Object.keys(fieldErrors).length > 0 ? `：${JSON.stringify(fieldErrors)}` : "";
+    throw new Error((body.error ?? `HTTP ${res.status}`) + detail);
   }
   return res.json() as Promise<T>;
 }
