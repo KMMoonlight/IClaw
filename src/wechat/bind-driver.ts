@@ -53,6 +53,7 @@ export async function runBindSession(opts: BindDriverOptions): Promise<LoginSess
 
   const failed = (message: string): LoginSession => ({
     key: opts.key,
+    id: "",
     phase: "failed",
     message,
     verifyRequired: false,
@@ -62,17 +63,26 @@ export async function runBindSession(opts: BindDriverOptions): Promise<LoginSess
   });
 
   try {
-    let session = await startLoginSession({ key: opts.key });
-    opts.onStateChange?.(session);
-    if (session.phase !== "wait") return session;
+    const mine = await startLoginSession({ key: opts.key });
+    opts.onStateChange?.(mine);
+    if (mine.phase !== "wait") return mine;
 
     for (;;) {
       if (aborted()) {
-        cancelLoginSession(opts.key);
+        // Only cancel when this driver still owns the session: a restart
+        // (rebind) replaces the session under the same key, and the stale
+        // driver must not tear down the fresh one.
+        const current = getLoginSession(opts.key);
+        if (current && current.id === mine.id) cancelLoginSession(opts.key);
         return { ...failed("已取消。"), phase: "cancelled", message: "已取消。" };
       }
-      session = (await pollLoginSession(opts.key)) ?? failed("登录会话已失效，请重新发起。");
-      opts.onStateChange?.(session);
+      const polled = (await pollLoginSession(opts.key)) ?? failed("登录会话已失效，请重新发起。");
+      if (polled.id !== mine.id) {
+        // Session was replaced by a newer bind under the same key; step aside.
+        return { ...polled, phase: "cancelled", message: "已被新的绑定会话取代。" };
+      }
+      opts.onStateChange?.(polled);
+      const session = polled;
 
       if (session.phase === "need_verifycode") {
         // Pause until a pairing code is submitted (CLI stdin / Web form).

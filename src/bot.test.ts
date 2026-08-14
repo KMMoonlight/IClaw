@@ -1,12 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { runAgentTurn, sendTextMessage } = vi.hoisted(() => ({
+const { runAgentTurn, resetUserSession, sendTextMessage } = vi.hoisted(() => ({
   runAgentTurn: vi.fn(),
+  resetUserSession: vi.fn(),
   sendTextMessage: vi.fn(),
 }));
 
-vi.mock("./agent/runtime.js", () => ({ runAgentTurn }));
+vi.mock("./agent/runtime.js", () => ({ runAgentTurn, resetUserSession }));
 vi.mock("./wechat/send.js", () => ({ sendTextMessage }));
+vi.mock("./wechat/typing.js", () => ({
+  TypingSession: class {
+    async start(): Promise<void> {}
+    async stop(): Promise<void> {}
+  },
+}));
 
 import { createBotHandler } from "./bot.js";
 import { bindBotAccount, createUser, openDbInMemory, setUserStatus } from "./db/index.js";
@@ -65,5 +72,20 @@ describe("bot routing（扫码即绑定：accountId → user）", () => {
     const sent = sendTextMessage.mock.calls[0]?.[0] as { text: string };
     expect(sent.text).toBe("处理出错，请稍后再试。");
     expect(sent.text).not.toContain("api key");
+  });
+
+  it("handles /new as a new-session command without running the agent", async () => {
+    const user = createUser("张三");
+    bindBotAccount("acc-1", user.id, "wx-from@im.wechat");
+
+    await createBotHandler()(ctx("acc-1", "/new"));
+    expect(resetUserSession).toHaveBeenCalledWith(user.id);
+    expect(runAgentTurn).not.toHaveBeenCalled();
+    expect(sendTextMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ text: expect.stringContaining("新会话") }),
+    );
+
+    await createBotHandler()(ctx("acc-1", "/新会话"));
+    expect(resetUserSession).toHaveBeenCalledTimes(2);
   });
 });

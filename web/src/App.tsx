@@ -39,10 +39,11 @@ interface BindStatus {
 }
 
 async function api<T>(path: string, opts: RequestInit = {}): Promise<T> {
-  const res = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...opts,
-  });
+  // Only send the JSON content-type when there IS a body: Fastify rejects
+  // empty bodies with a JSON content-type (400 Bad Request).
+  const headers: Record<string, string> = {};
+  if (opts.body !== undefined) headers["Content-Type"] = "application/json";
+  const res = await fetch(path, { ...opts, headers });
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(body.error ?? `HTTP ${res.status}`);
@@ -91,22 +92,31 @@ function BindModal({ user, onClose, onBound }: { user: User; onClose: () => void
 
   useEffect(() => {
     let stopped = false;
-    void api<BindStatus>(`/api/users/${user.id}/bind`, { method: "POST" })
-      .then((s) => { if (!stopped) setStatus(s); })
-      .catch((e) => { if (!stopped) setErr(e instanceof Error ? e.message : String(e)); });
+    let timer: ReturnType<typeof setInterval> | undefined;
 
-    const timer = setInterval(() => {
-      api<BindStatus>(`/api/users/${user.id}/bind/status`)
-        .then((s) => {
-          if (stopped) return;
-          setStatus(s);
-          if (s.connected && s.bound) {
-            clearInterval(timer);
-            onBound();
-          }
-        })
-        .catch(() => { /* transient; keep polling */ });
-    }, 2000);
+    // Poll only after the bind session has actually been created.
+    const startPolling = () => {
+      timer = setInterval(() => {
+        api<BindStatus>(`/api/users/${user.id}/bind/status`)
+          .then((s) => {
+            if (stopped) return;
+            setStatus(s);
+            if (s.connected && s.bound) {
+              clearInterval(timer);
+              onBound();
+            }
+          })
+          .catch(() => { /* transient; keep polling */ });
+      }, 2000);
+    };
+
+    void api<BindStatus>(`/api/users/${user.id}/bind`, { method: "POST" })
+      .then((s) => {
+        if (stopped) return;
+        setStatus(s);
+        startPolling();
+      })
+      .catch((e) => { if (!stopped) setErr(e instanceof Error ? e.message : String(e)); });
 
     const cancelOnLeave = () => {
       void api(`/api/users/${user.id}/bind/cancel`, { method: "POST" }).catch(() => {});
@@ -115,7 +125,7 @@ function BindModal({ user, onClose, onBound }: { user: User; onClose: () => void
 
     return () => {
       stopped = true;
-      clearInterval(timer);
+      if (timer) clearInterval(timer);
       window.removeEventListener("beforeunload", cancelOnLeave);
     };
   }, [user.id, onBound]);
@@ -212,12 +222,22 @@ function UsersTab() {
     reload();
   };
 
+  const resetSession = async (u: User) => {
+    if (!window.confirm(`确定清空 ${u.name} 的对话历史（开启新会话）吗？`)) return;
+    await api(`/api/users/${u.id}/session/reset`, { method: "POST" });
+    reload();
+  };
+
   const editPersona = async (u: User) => {
     const p = window.prompt("编辑该用户的人设（补充 system prompt）", u.persona);
     if (p === null) return;
     await api(`/api/users/${u.id}`, { method: "PATCH", body: JSON.stringify({ persona: p }) });
     reload();
   };
+
+  const handleBound = useCallback(() => {
+    void reload();
+  }, [reload]);
 
   return (
     <div>
@@ -263,6 +283,7 @@ function UsersTab() {
                       ? <button className="small" onClick={() => setBindUser(u)}>重新绑定</button>
                       : <button className="small primary" onClick={() => setBindUser(u)}>绑定二维码</button>}
                     {u.botAccount && <button className="small danger" onClick={() => unbind(u)}>解绑</button>}
+                    <button className="small" onClick={() => resetSession(u)}>新会话</button>
                     <button className="small" onClick={() => editPersona(u)}>编辑人设</button>
                     <button className={`small ${u.status === "active" ? "danger" : ""}`} onClick={() => toggleStatus(u)}>
                       {u.status === "active" ? "冻结" : "解冻"}
@@ -282,7 +303,7 @@ function UsersTab() {
         <BindModal
           user={bindUser}
           onClose={() => setBindUser(null)}
-          onBound={() => { void reload(); }}
+          onBound={handleBound}
         />
       )}
     </div>

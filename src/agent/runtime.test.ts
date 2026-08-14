@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
-import { trimMessages, TRANSCRIPT_MAX_MESSAGES } from "./runtime.js";
+import { trimMessages, TRANSCRIPT_MAX_MESSAGES } from "./transcript.js";
 
 type MsgRole = "user" | "assistant" | "toolResult";
 

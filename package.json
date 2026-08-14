@@ -21,7 +21,8 @@
     "echo": "tsx src/cli.ts echo",
     "create-user": "tsx src/cli.ts create-user",
     "serve": "tsx src/server/index.ts",
-    "status": "tsx src/cli.ts status"
+    "status": "tsx src/cli.ts status",
+    "reset-admin-password": "tsx src/cli.ts reset-admin-password"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "^0.84.1",

@@ -7,7 +7,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
 
 import { loadConfig } from "../config.js";
-import { getUser, loadMessagesJson, saveMessagesJson } from "../db/index.js";
+import { clearUserSession, getUser, loadMessagesJson, saveMessagesJson } from "../db/index.js";
 import { logger } from "../logger.js";
 import type { User } from "../db/index.js";
 import type { InboundContext } from "../wechat/inbound.js";
@@ -15,6 +15,7 @@ import { buildMcpTools } from "./mcp.js";
 import { getModels, resolveConfiguredModel, supportsImages } from "./models.js";
 import { resetSkillsCache, skillsPrompt } from "./skills.js";
 import { buildTools } from "./tools.js";
+import { maybeCompactTranscript, trimMessages, TRANSCRIPT_MAX_MESSAGES } from "./transcript.js";
 
 /** One Agent instance per user, sharing model/tools/system-prompt shape but with isolated transcripts. */
 const agents = new Map<string, Agent>();
@@ -25,9 +26,6 @@ const turnChains = new Map<string, Promise<unknown>>();
 
 /** Evict an agent that has been idle this long (transcript stays persisted in the DB). */
 const AGENT_IDLE_TTL_MS = 24 * 60 * 60 * 1000;
-
-/** Max messages persisted per user; older turns are trimmed at the next user-message boundary. */
-export const TRANSCRIPT_MAX_MESSAGES = 200;
 
 /** Shared (non-user-bound) tools: MCP tools built once at startup. */
 let sharedTools: AgentTool<any>[] = [];
@@ -66,22 +64,7 @@ function lastAssistantText(agent: Agent): string {
   return "";
 }
 
-/**
- * Trim the transcript to at most `max` messages, cutting at a user-message
- * boundary so the remaining tail stays structurally valid for the model
- * (never starts with an orphaned tool result).
- */
-export function trimMessages(msgs: AgentMessage[], max: number): AgentMessage[] {
-  if (msgs.length <= max) return msgs;
-  let start = msgs.length - max;
-  for (let i = start; i < msgs.length; i++) {
-    if (msgs[i]?.role === "user") {
-      start = i;
-      break;
-    }
-  }
-  return msgs.slice(start);
-}
+export { trimMessages } from "./transcript.js";
 
 function sweepIdleAgents(now: number): void {
   for (const [userId, agent] of agents) {
@@ -129,6 +112,12 @@ export function dropAllAgents(): void {
   lastUsed.clear();
 }
 
+/** Wipe a user's transcript and unload their agent (new session). */
+export function resetUserSession(userId: string): void {
+  clearUserSession(userId);
+  dropAgent(userId);
+}
+
 /**
  * Run one agent turn for a bound, active user. Returns the assistant's reply text.
  * Turns for the same user are serialized: Agent.prompt rejects concurrent calls,
@@ -160,6 +149,8 @@ async function runAgentTurnInner(userId: string, ctx: InboundContext): Promise<s
   }
 
   await agent.prompt(body, images);
+  // Token-aware compression first (summarize old turns), then the hard cap.
+  await maybeCompactTranscript(agent);
   const messages = trimMessages(agent.state.messages, TRANSCRIPT_MAX_MESSAGES);
   if (messages !== agent.state.messages) {
     try {

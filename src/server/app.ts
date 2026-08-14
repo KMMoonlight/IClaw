@@ -7,13 +7,12 @@ import fastifyStatic from "@fastify/static";
 import QRCode from "qrcode";
 import { z } from "zod";
 
-import { dropAgent, initSharedTools } from "../agent/runtime.js";
+import { dropAgent, initSharedTools, resetUserSession } from "../agent/runtime.js";
 import { listMcpServerStatus, loadMcpServers, saveMcpServers, mcpServersSchema } from "../agent/mcp.js";
 import { loadSkills, resetSkillsCache } from "../agent/skills.js";
 import { createBotHandler } from "../bot.js";
 import { loadConfig } from "../config.js";
 import {
-  countAdmins,
   createAdmin,
   createUser,
   getAdminByUsername,
@@ -21,6 +20,7 @@ import {
   getUser,
   listBotBindings,
   listUsers,
+  setAdminPassword,
   setUserMemory,
   setUserPersona,
   setUserStatus,
@@ -230,6 +230,13 @@ function buildApp(botHandler: (ctx: import("../wechat/inbound.js").InboundContex
     return { ok: true };
   });
 
+  app.post("/api/users/:id/session/reset", { preHandler: authGuard }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!getUser(id)) return reply.code(404).send({ error: "user not found" });
+    resetUserSession(id);
+    return { ok: true };
+  });
+
   // --- skills -----------------------------------------------------------
   app.get("/api/skills", { preHandler: authGuard }, async () => {
     return loadSkills().map((s) => ({ name: s.name, description: s.description }));
@@ -294,10 +301,28 @@ function buildApp(botHandler: (ctx: import("../wechat/inbound.js").InboundContex
   return app;
 }
 
+/** Strip one layer of surrounding double quotes (users sometimes copy `KEY="value"` style). */
+function stripQuotes(v: string): string {
+  if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) return v.slice(1, -1);
+  return v;
+}
+
 function ensureAdmin(): void {
-  if (countAdmins() > 0) return;
   const cfg = loadConfig();
-  const password = process.env.ICLAW_ADMIN_PASSWORD ?? generateAdminPassword();
+  const envPassword = stripQuotes(process.env.ICLAW_ADMIN_PASSWORD?.trim() ?? "");
+  const existing = getAdminByUsername(cfg.adminUser);
+
+  if (existing) {
+    // ICLAW_ADMIN_PASSWORD is authoritative: keep the stored hash in sync,
+    // so editing .env always takes effect after a restart.
+    if (envPassword && !verifyPassword(envPassword, existing.passwordHash)) {
+      setAdminPassword(cfg.adminUser, hashPassword(envPassword));
+      logger.warn("管理员密码已按 ICLAW_ADMIN_PASSWORD 更新。");
+    }
+    return;
+  }
+
+  const password = envPassword || generateAdminPassword();
   createAdmin(cfg.adminUser, hashPassword(password));
   logger.warn(`已创建管理员账号：${cfg.adminUser}`);
   logger.warn(`管理员密码：${password}（请立即登录并妥善保管；可用环境变量 ICLAW_ADMIN_PASSWORD 覆盖）`);

@@ -44,9 +44,13 @@ npm run serve          # 或 npm run dev
 2. 用户用手机微信扫码并确认授权——其微信中会出现一个**专属 Bot 好友**（仅本人可见）。
 3. 用户与该 Bot 好友聊天，即与 Pi 对话；每人会话/人设/记忆独立。扫码即完成绑定，无需其他操作。
 
-> 会话记录按用户存于业务 SQLite（每轮保存，上限 200 条，超出按轮次裁剪最旧内容）；
-> agent 空闲 24 小时后从内存卸载（重启后从库恢复）。每个已绑定用户的 bot 账号各起一条
-> 监控通道，新绑定即时生效（无需重启）；`echo` 模式则对全部已注册账号生效。
+> 会话与上下文：每用户会话存于业务 SQLite。**上下文管理**是双层的——① token 感知压缩：当估算
+> token 数超过 `ICLAW_MODEL_CONTEXT_WINDOW - 16k` 时，用模型把更早的对话生成摘要，替换旧记录（保留
+> 最近 ~20k token 原文，对齐轮次边界；摘要失败则只保留近期原文）；② 兜底硬上限 400 条消息。
+> **开启新会话**：用户在微信里发 `/new`（或 `/新会话`），或在 Web 用户页点「新会话」，即清空该用户的
+> 对话历史（人设/记忆不受影响）。agent 空闲 24 小时后从内存卸载（重启后从库恢复）。
+> 每个已绑定用户的 bot 账号各起一条监控通道，新绑定即时生效（无需重启）；`echo` 模式则对全部已注册账号生效。
+> AI 生成回复期间会通过 iLink 向微信发送「对方正在输入…」指示（typing_ticket 按用户缓存 24h）。
 
 ## 配置（`.env`）
 
@@ -66,7 +70,7 @@ npm run serve          # 或 npm run dev
 | `ICLAW_MCP_CONFIG` | MCP 配置路径 | `./mcp.json` |
 | `ICLAW_SERVER_HOST` / `ICLAW_SERVER_PORT` | 管理端监听地址 | `127.0.0.1` / `3000` |
 | `ICLAW_ADMIN_USER` | 管理员用户名 | `admin` |
-| `ICLAW_ADMIN_PASSWORD` | 首次创建管理员的密码（不设则自动生成并打印） | — |
+| `ICLAW_ADMIN_PASSWORD` | 管理员密码（权威：每次启动同步到库中；不设则首次自动生成并打印） | — |
 | `ICLAW_COOKIE_SECURE` | 会话 cookie 带 `Secure` 标志（对外暴露时配 HTTPS 后开启） | `false` |
 
 完整见 `.env.example`。需要 Node.js ≥ 22.13（`node:sqlite` 免 flag）；22.5–22.12 需加 `--experimental-sqlite` 启动参数。

@@ -19,6 +19,8 @@ export type LoginPhase =
 /** Observable view of one QR login session (safe to serialize to the Web UI). */
 export interface LoginSession {
   key: string;
+  /** Internal unique id of this session generation (ownership guard for drivers). */
+  id: string;
   phase: LoginPhase;
   message: string;
   /** Content to render as a QR code (the WeChat login link). */
@@ -100,6 +102,7 @@ function purgeExpiredLogins(): void {
 function toSession(login: ActiveLogin): LoginSession {
   return {
     key: login.key,
+    id: login.id,
     phase: login.phase,
     message: login.message,
     qrcodeUrl: login.qrcodeUrl,
@@ -208,6 +211,7 @@ export async function startLoginSession(opts: { key?: string; force?: boolean } 
     logger.error(`Failed to start Weixin login: ${String(err)}`);
     return {
       key,
+      id: "",
       phase: "failed",
       message: `Failed to start login: ${String(err)}`,
       verifyRequired: false,

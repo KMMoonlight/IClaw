@@ -199,6 +199,11 @@ export function saveMessagesJson(userId: string, messagesJson: string): void {
     .run(userId, messagesJson, Date.now());
 }
 
+/** Delete a user's persisted transcript (start a fresh session). */
+export function clearUserSession(userId: string): void {
+  openDb().prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+}
+
 // ---------------------------------------------------------------------------
 // admins
 // ---------------------------------------------------------------------------
@@ -224,6 +229,10 @@ export function createAdmin(username: string, passwordHash: string): Admin {
     admin.createdAt,
   );
   return admin;
+}
+
+export function setAdminPassword(username: string, passwordHash: string): void {
+  openDb().prepare("UPDATE admins SET password_hash = ? WHERE username = ?").run(passwordHash, username);
 }
 
 export function countAdmins(): number {

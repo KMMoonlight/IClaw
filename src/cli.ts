@@ -1,7 +1,9 @@
 import { initSharedTools } from "./agent/runtime.js";
 import { createBotHandler } from "./bot.js";
 import { startServer } from "./server/app.js";
-import { createUser, listBotBindings } from "./db/index.js";
+import { hashPassword } from "./server/auth.js";
+import { loadConfig } from "./config.js";
+import { createUser, getAdminByUsername, listBotBindings, setAdminPassword } from "./db/index.js";
 import { persistAndBind } from "./wechat/binding.js";
 import { runBindSession } from "./wechat/bind-driver.js";
 import {
@@ -32,6 +34,8 @@ Usage:
   iclaw run                 启动 bot：为每个已绑定用户的 bot 账号各起一条通道
   iclaw echo                回显模式：全部已注册账号，通道测试，不调 AI
   iclaw status              查看已注册账号与绑定关系
+  iclaw reset-admin-password <new-password>
+                            重置管理员密码（也可在 .env 设 ICLAW_ADMIN_PASSWORD 后重启）
   iclaw serve               启动 Web 管理端 + 微信通道
 `;
 
@@ -199,6 +203,22 @@ async function createUserCmd(name: string): Promise<number> {
   return 0;
 }
 
+async function resetAdminPassword(newPassword: string): Promise<number> {
+  if (!newPassword) {
+    process.stderr.write("用法：iclaw reset-admin-password <new-password>\n");
+    return 1;
+  }
+  const cfg = loadConfig();
+  const admin = getAdminByUsername(cfg.adminUser);
+  if (!admin) {
+    process.stderr.write("未找到管理员账号（先运行 iclaw serve 创建，或在 .env 设 ICLAW_ADMIN_PASSWORD 后启动）。\n");
+    return 1;
+  }
+  setAdminPassword(cfg.adminUser, hashPassword(newPassword));
+  process.stdout.write("已更新管理员密码。\n");
+  return 0;
+}
+
 async function serve(): Promise<number> {
   await startServer();
   return 0;
@@ -242,6 +262,8 @@ async function main(): Promise<number> {
       return serve();
     case "status":
       return status();
+    case "reset-admin-password":
+      return resetAdminPassword(arg ?? "");
     default:
       process.stdout.write(USAGE);
       return cmd ? 1 : 0;

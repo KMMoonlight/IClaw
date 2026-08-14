@@ -15,6 +15,7 @@ import {
   loadMessagesJson,
   openDbInMemory,
   saveMessagesJson,
+  setAdminPassword,
   setUserMemory,
   setUserPersona,
   setUserStatus,
@@ -112,5 +113,12 @@ describe("admins", () => {
     expect(countAdmins()).toBe(1);
     expect(getAdminByUsername("admin")?.passwordHash).toBe("hash");
     expect(getAdminByUsername("nobody")).toBeNull();
+  });
+
+  it("updates an admin password hash in place", () => {
+    createAdmin("admin", "hash-old");
+    setAdminPassword("admin", "hash-new");
+    expect(getAdminByUsername("admin")?.passwordHash).toBe("hash-new");
+    expect(countAdmins()).toBe(1);
   });
 });
