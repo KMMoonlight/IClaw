@@ -317,6 +317,10 @@ function SkillsTab() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [body, setBody] = useState("");
+  const [repoUrl, setRepoUrl] = useState("");
+  const [installMsg, setInstallMsg] = useState("");
+  const [installErr, setInstallErr] = useState("");
+  const [installing, setInstalling] = useState(false);
   const [err, setErr] = useState("");
 
   const reload = useCallback(async () => {
@@ -336,6 +340,26 @@ function SkillsTab() {
     reload();
   };
 
+  const installFromGithub = async () => {
+    if (!repoUrl.trim()) return;
+    setInstalling(true);
+    setInstallMsg("");
+    setInstallErr("");
+    try {
+      const r = await api<{ names: string[] }>("/api/skills/install", {
+        method: "POST",
+        body: JSON.stringify({ url: repoUrl.trim() }),
+      });
+      setInstallMsg(`✅ 已安装：${r.names.join(", ")}（立即生效）`);
+      setRepoUrl("");
+      reload();
+    } catch (e) {
+      setInstallErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setInstalling(false);
+    }
+  };
+
   const remove = async (n: string) => {
     if (!window.confirm(`确定删除技能「${n}」吗？`)) return;
     await api(`/api/skills/${encodeURIComponent(n)}`, { method: "DELETE" });
@@ -344,6 +368,23 @@ function SkillsTab() {
 
   return (
     <div>
+      <div className="card">
+        <h2>从 GitHub 安装</h2>
+        <p className="muted">粘贴公开仓库地址（owner/repo 或完整 URL），仓库需含 SKILL.md（单个技能或技能合集均可）。</p>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input
+            value={repoUrl}
+            onChange={(e) => setRepoUrl(e.target.value)}
+            placeholder="anthropics/skills 或 https://github.com/anthropics/skills"
+          />
+          <button className="primary" onClick={installFromGithub} disabled={installing}>
+            {installing ? "安装中…" : "安装"}
+          </button>
+        </div>
+        {installMsg && <div className="success">{installMsg}</div>}
+        {installErr && <div className="err">{installErr}</div>}
+      </div>
+
       <div className="card">
         <h2>新增技能</h2>
         <label>名称</label>

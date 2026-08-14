@@ -9,7 +9,7 @@ import { z } from "zod";
 
 import { dropAgent, initSharedTools, resetUserSession } from "../agent/runtime.js";
 import { listMcpServerStatus, loadMcpServers, saveMcpServers, mcpServersSchema } from "../agent/mcp.js";
-import { loadSkills, resetSkillsCache } from "../agent/skills.js";
+import { installSkillFromGithub, loadSkills, resetSkillsCache } from "../agent/skills.js";
 import { createBotHandler } from "../bot.js";
 import { loadConfig } from "../config.js";
 import {
@@ -50,6 +50,7 @@ const userPatchSchema = z
   .strict();
 
 const verifyCodeSchema = z.object({ code: z.string().min(1).max(16) }).strict();
+const skillInstallSchema = z.object({ url: z.string().min(1).max(200) }).strict();
 
 // --- login rate limiting (fixed window per IP) -----------------------------
 
@@ -258,6 +259,19 @@ function buildApp(botHandler: (ctx: import("../wechat/inbound.js").InboundContex
     fs.writeFileSync(path.join(skillDir, "SKILL.md"), frontmatter + body.trim() + "\n");
     resetSkillsCache();
     return { name: safe };
+  });
+
+  app.post("/api/skills/install", { preHandler: authGuard }, async (req, reply) => {
+    const parsed = skillInstallSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "invalid body", details: parsed.error.flatten() });
+    }
+    try {
+      const result = await installSkillFromGithub(parsed.data.url);
+      return { ok: true, ...result };
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   app.delete("/api/skills/:name", { preHandler: authGuard }, async (req, reply) => {

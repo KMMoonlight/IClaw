@@ -111,7 +111,8 @@ npm run serve          # 或 npm run dev
 
 ## 技能与 MCP
 
-- **技能**：Pi 原生 Agent Skills（`SKILL.md` + frontmatter）。放在 `skillsDir` 下自动发现；Web 端可新增/删除。
+- **技能**：Pi 原生 Agent Skills（`SKILL.md` + frontmatter）。放在 `skillsDir` 下自动发现；Web 端可新增/删除，
+  也可以**直接从 GitHub 仓库安装**（粘贴 `owner/repo` 或完整 URL，支持单技能仓库与技能合集，服务端下载解压，无需 git 二进制）。
   描述注入 system prompt，agent 用 `read_skill` 工具按需加载完整说明。
 - **MCP**：直接使用 [`@modelcontextprotocol/sdk`](https://github.com/modelcontextprotocol/typescript-sdk)
   把每个 MCP server 的工具注册为 Pi 原生 tool（stdio / SSE / Streamable HTTP）。
