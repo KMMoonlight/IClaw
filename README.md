@@ -143,6 +143,10 @@ web/           # React 管理端（Vite）
 且每个用户绑定的是**其本人的微信号**（其微信中出现的专属 Bot 好友背后即其本人账号），
 请务必在用户知情同意的前提下使用，正式对外前自行评估合规边界。`botAgent` 已自报 `IClaw/1.0`，未伪装 OpenClaw。
 
+## 部署
+
+生产部署（Docker Compose / systemd / HTTPS 反代 / 备份运维）见 [`docs/DEPLOY.md`](docs/DEPLOY.md)。
+
 ## 致谢
 
 微信通道部分代码改编自 [Tencent/openclaw-weixin](https://github.com/Tencent/openclaw-weixin)（MIT License），

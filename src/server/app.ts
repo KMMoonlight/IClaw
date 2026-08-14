@@ -128,6 +128,11 @@ function buildApp(botHandler: (ctx: import("../wechat/inbound.js").InboundContex
     return { username: verifySession(req.cookies[COOKIE_NAME]) };
   });
 
+  // --- health (unauthenticated, for orchestrators / LB probes) ------------
+  app.get("/api/health", async () => {
+    return { ok: true, channels: listRunningChannels().length };
+  });
+
   // --- users ------------------------------------------------------------
   app.get("/api/users", { preHandler: authGuard }, async () => {
     return listUsers().map((u) => {
