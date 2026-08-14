@@ -116,7 +116,12 @@ npm run serve          # 或 npm run dev
   描述注入 system prompt，agent 用 `read_skill` 工具按需加载完整说明。
 - **MCP**：直接使用 [`@modelcontextprotocol/sdk`](https://github.com/modelcontextprotocol/typescript-sdk)
   把每个 MCP server 的工具注册为 Pi 原生 tool（stdio / SSE / Streamable HTTP）。
-  Web 端可编辑 `mcp.json` 并查看连接状态与工具列表。修改后需重启服务。
+  Web 端可编辑 `mcp.json` 并查看连接状态与工具列表。**保存即热加载**（重新连接 MCP、
+  刷新所有会话的工具集），无需重启。
+  > 注意：官方参考服务器（含 `@modelcontextprotocol/server-fetch`）已从 npm 下架，
+  > 示例见 `mcp.json.example`（`server-github` 仍在维护）。
+- **内置联网工具 `web_fetch`**：抓取网页/接口文本（带 SSRF 防护：拒绝内网/本机地址、
+  限重定向 3 次、15s 超时、500KB 上限、HTML 转纯文本），无需任何 MCP 配置。
 
 > 注：调研阶段原本计划用 `pi-mcp-adapter`，但其面向 Pi coding-agent 的扩展 API（非
 > `pi-agent-core` 的 `Agent`），故改为直接用官方 MCP SDK 做原生工具注册，效果等价。

@@ -439,8 +439,9 @@ function McpTab() {
     try {
       const servers = JSON.parse(json);
       await api("/api/mcp", { method: "PUT", body: JSON.stringify({ servers }) });
-      setMsg("已保存。注意：已运行的会话不会自动加载新 MCP 工具，需重启服务。");
+      setMsg("已保存并热加载：MCP 工具已对后续消息生效。");
       setErr("");
+      reload();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     }

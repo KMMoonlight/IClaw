@@ -11,7 +11,7 @@ import { clearUserSession, getUser, loadMessagesJson, saveMessagesJson } from ".
 import { logger } from "../logger.js";
 import type { User } from "../db/index.js";
 import type { InboundContext } from "../wechat/inbound.js";
-import { buildMcpTools } from "./mcp.js";
+import { buildMcpTools, resetMcpClients } from "./mcp.js";
 import { getModels, resolveConfiguredModel, supportsImages } from "./models.js";
 import { resetSkillsCache, skillsPrompt } from "./skills.js";
 import { buildTools } from "./tools.js";
@@ -36,12 +36,32 @@ export async function initSharedTools(): Promise<void> {
   sharedTools = await buildMcpTools();
 }
 
-function buildSystemPrompt(user: User): string {
+/**
+ * Rebuild MCP tools after the admin edits the MCP config — no restart needed.
+ * Refreshes the tool set of every cached agent so the change applies to
+ * subsequent turns immediately.
+ */
+export async function reloadSharedTools(): Promise<void> {
+  resetMcpClients();
+  resetSkillsCache();
+  sharedTools = await buildMcpTools();
+  for (const [userId, agent] of agents) {
+    try {
+      agent.state.tools = buildTools(userId, sharedTools);
+    } catch (err) {
+      logger.warn(`runtime: failed to refresh tools for ${userId}: ${String(err)}`);
+    }
+  }
+}
+
+function buildSystemPrompt(user: User, tools: AgentTool<any>[]): string {
   const parts: string[] = [loadConfig().systemPrompt];
   if (user.persona.trim()) parts.push(`## 当前用户\n${user.persona}`);
   if (user.memory.trim()) parts.push(`## 关于当前用户的记忆\n${user.memory}`);
   const sp = skillsPrompt();
   if (sp) parts.push(sp);
+  const toolNames = [...new Set(tools.map((t) => t.name))];
+  parts.push(`## 当前可用工具\n${toolNames.join(", ")}`);
   return parts.join("\n\n");
 }
 
@@ -88,11 +108,12 @@ export async function getOrCreateAgent(userId: string): Promise<Agent> {
   const parsed = JSON.parse(loadMessagesJson(userId)) as AgentMessage[];
   const messages = trimMessages(Array.isArray(parsed) ? parsed : [], TRANSCRIPT_MAX_MESSAGES);
   const models = getModels();
+  const tools = buildTools(userId, sharedTools);
   const agent = new Agent({
     initialState: {
-      systemPrompt: buildSystemPrompt(user),
+      systemPrompt: buildSystemPrompt(user, tools),
       model: resolveConfiguredModel(),
-      tools: buildTools(userId, sharedTools),
+      tools,
       messages,
     },
     streamFn: models.streamSimple.bind(models),
@@ -136,7 +157,7 @@ async function runAgentTurnInner(userId: string, ctx: InboundContext): Promise<s
   lastUsed.set(userId, Date.now());
   const user = getUser(userId)!;
   // Refresh persona/memory each turn so newly-remembered facts take effect immediately.
-  agent.state.systemPrompt = buildSystemPrompt(user);
+  agent.state.systemPrompt = buildSystemPrompt(user, agent.state.tools);
 
   let body = ctx.body.trim() || "(empty)";
   let images: ImageContent[] | undefined;

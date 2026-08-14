@@ -60,6 +60,14 @@ export function loadMcpServers(): Record<string, McpServerConfig> {
 
 const clients = new Map<string, Client>();
 
+/** Close and forget all connected MCP clients (for config hot-reload). */
+export function resetMcpClients(): void {
+  for (const client of clients.values()) {
+    void client.close().catch(() => {});
+  }
+  clients.clear();
+}
+
 function createTransport(name: string, cfg: McpServerConfig) {
   if (cfg.url) {
     const url = new URL(cfg.url);
@@ -69,11 +77,25 @@ function createTransport(name: string, cfg: McpServerConfig) {
     return new SSEClientTransport(url);
   }
   if (cfg.command) {
-    return new StdioClientTransport({
+    const parentEnv: Record<string, string> = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      if (v !== undefined) parentEnv[k] = v;
+    }
+    const transport = new StdioClientTransport({
       command: cfg.command,
       args: cfg.args ?? [],
-      env: cfg.env,
+      // Inherit the full environment (the SDK's default is a minimal safe
+      // whitelist that breaks nvm-based npx and servers needing custom vars).
+      env: { ...parentEnv, ...(cfg.env ?? {}) },
+      stderr: "pipe",
     });
+    // Surface child stderr in our logs for diagnostics ("Connection closed" etc.).
+    if (transport.stderr) {
+      transport.stderr.on("data", (chunk: Buffer) => {
+        logger.debug(`mcp "${name}" stderr: ${String(chunk).trim()}`);
+      });
+    }
+    return transport;
   }
   throw new Error(`MCP server "${name}": needs either "command" (stdio) or "url" (http/sse)`);
 }

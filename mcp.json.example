@@ -1,8 +1,11 @@
 {
   "mcpServers": {
-    "fetch": {
+    "github": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-fetch"]
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "<你的 GitHub PAT>"
+      }
     },
     "remote-http": {
       "url": "https://example.com/mcp"

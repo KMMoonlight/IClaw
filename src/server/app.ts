@@ -7,7 +7,7 @@ import fastifyStatic from "@fastify/static";
 import QRCode from "qrcode";
 import { z } from "zod";
 
-import { dropAgent, initSharedTools, resetUserSession } from "../agent/runtime.js";
+import { dropAgent, initSharedTools, reloadSharedTools, resetUserSession } from "../agent/runtime.js";
 import { listMcpServerStatus, loadMcpServers, saveMcpServers, mcpServersSchema } from "../agent/mcp.js";
 import { installSkillFromGithub, loadSkills, resetSkillsCache } from "../agent/skills.js";
 import { createBotHandler } from "../bot.js";
@@ -299,6 +299,8 @@ function buildApp(botHandler: (ctx: import("../wechat/inbound.js").InboundContex
       return reply.code(400).send({ error: "invalid body", details: parsed.error.flatten() });
     }
     saveMcpServers(parsed.data.servers);
+    // Hot reload: reconnect MCP clients and refresh every cached agent's tools.
+    await reloadSharedTools();
     return { ok: true };
   });
 
