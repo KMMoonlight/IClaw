@@ -18,8 +18,10 @@ export function hashPassword(password: string): string {
 export function verifyPassword(password: string, stored: string): boolean {
   const [scheme, salt, hash] = stored.split(":");
   if (scheme !== "scrypt" || !salt || !hash) return false;
+  const expected = Buffer.from(hash, "hex");
   const candidate = crypto.scryptSync(password, salt, 64);
-  return crypto.timingSafeEqual(candidate, Buffer.from(hash, "hex"));
+  if (expected.length !== candidate.length) return false; // malformed stored hash
+  return crypto.timingSafeEqual(candidate, expected);
 }
 
 // ---------------------------------------------------------------------------

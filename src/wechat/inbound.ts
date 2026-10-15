@@ -3,10 +3,12 @@ import type { MessageItem, WeixinMessage } from "./types.js";
 import { MessageItemType } from "./types.js";
 
 export interface InboundMedia {
-  /** Local path to decrypted image (image/voice/file/video after CDN download+decrypt). */
+  /** Local path to decrypted media (image/voice/file/video after CDN download+decrypt). */
   path: string;
   /** MIME type hint, e.g. "image/*". */
   type: string;
+  /** Original file name for FILE items. */
+  fileName?: string;
 }
 
 /** Normalized inbound message handed to the agent adapter. */
@@ -59,6 +61,23 @@ export function bodyFromItemList(itemList?: MessageItem[]): string {
 /** Find the first image item in the list (for inbound image handling). */
 export function findImageItem(itemList?: MessageItem[]): MessageItem | undefined {
   return itemList?.find((i) => i.type === MessageItemType.IMAGE);
+}
+
+/** Find the first media item (image/file/voice/video). */
+export function findMediaItem(itemList?: MessageItem[]): MessageItem | undefined {
+  return itemList?.find((i) => isMediaItem(i));
+}
+
+/** Whether media can be sent to the model as an image input. */
+export function isImageMedia(media: InboundMedia): boolean {
+  return media.type.startsWith("image/");
+}
+
+/** Human-readable note describing a non-image attachment for the model. */
+export function buildMediaNote(media: InboundMedia, sizeBytes?: number): string {
+  const name = media.fileName ?? "附件";
+  const size = sizeBytes !== undefined ? `，${sizeBytes} 字节` : "";
+  return `[收到附件：${name}${size}，已保存到服务器。]`;
 }
 
 /** Convert a WeixinMessage to a normalized InboundContext. */

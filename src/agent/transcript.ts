@@ -25,14 +25,25 @@ export const TRANSCRIPT_MAX_MESSAGES = 400;
  */
 export function trimMessages(msgs: AgentMessage[], max: number): AgentMessage[] {
   if (msgs.length <= max) return msgs;
-  let start = msgs.length - max;
-  for (let i = start; i < msgs.length; i++) {
+  const candidate = msgs.length - max;
+  let boundary = -1;
+  for (let i = candidate; i < msgs.length; i++) {
     if (msgs[i]?.role === "user") {
-      start = i;
+      boundary = i;
       break;
     }
   }
-  return msgs.slice(start);
+  if (boundary < 0) {
+    // No user message in the tail window: extend backward to the nearest user
+    // message so the tail never begins with an orphaned tool result.
+    for (let i = candidate - 1; i >= 0; i--) {
+      if (msgs[i]?.role === "user") {
+        boundary = i;
+        break;
+      }
+    }
+  }
+  return msgs.slice(boundary >= 0 ? boundary : candidate);
 }
 
 /** Find the boundary for compaction: keep ~keepRecentTokens from the tail, snapped to a user message. */

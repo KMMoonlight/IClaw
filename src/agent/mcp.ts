@@ -24,6 +24,76 @@ interface McpConfigFile {
   mcpServers?: Record<string, McpServerConfig>;
 }
 
+/** Placeholder used in API responses in place of secret env values. */
+export const SECRET_MASK = "***";
+
+/** Mask credentials embedded in a URL's userinfo (`scheme://user:pass@host`). */
+export function maskUrlSecrets(url: string): string {
+  return url.replace(/^([a-z][a-z0-9+.-]*:\/\/)([^/@?#]+)@/i, `$1${SECRET_MASK}@`);
+}
+
+/**
+ * Mask `--flag=secret` style command args. Only flags whose name *starts a word*
+ * segment with a secret-ish keyword are masked, so e.g. `--monkey=...` is left
+ * alone while `--token=`, `--api-key=`, `--access-key-id=` are masked.
+ */
+export function maskArgSecrets(arg: string): string {
+  return arg.replace(
+    /(?<!\w)(token|api[-_]?key|secret|password|passwd|auth)([-_][\w.-]*)?=(\S+)/gi,
+    (_match, name: string, suffix: string | undefined) => `${name}${suffix ?? ""}=${SECRET_MASK}`,
+  );
+}
+
+/** Return a copy of the server map with secrets (env values, URL userinfo, args) masked. */
+export function maskMcpServers(servers: Record<string, McpServerConfig>): Record<string, McpServerConfig> {
+  const out: Record<string, McpServerConfig> = {};
+  for (const [name, cfg] of Object.entries(servers)) {
+    const copy: McpServerConfig = { ...cfg };
+    if (cfg.env) copy.env = Object.fromEntries(Object.keys(cfg.env).map((k) => [k, SECRET_MASK]));
+    if (typeof copy.url === "string") copy.url = maskUrlSecrets(copy.url);
+    if (Array.isArray(copy.args)) copy.args = copy.args.map(maskArgSecrets);
+    out[name] = copy;
+  }
+  return out;
+}
+
+/**
+ * Merge incoming (possibly masked) servers with the stored ones so that a
+ * round-tripped `"***"` value keeps the existing secret instead of wiping it.
+ */
+export function mergeMaskedSecrets(
+  incoming: Record<string, McpServerConfig>,
+  existing: Record<string, McpServerConfig>,
+): Record<string, McpServerConfig> {
+  const out: Record<string, McpServerConfig> = {};
+  for (const [name, cfg] of Object.entries(incoming)) {
+    const merged: McpServerConfig = { ...cfg };
+    const prior = existing[name];
+    if (cfg.env) {
+      const prevEnv = prior?.env ?? {};
+      const env: Record<string, string> = {};
+      for (const [k, v] of Object.entries(cfg.env)) {
+        if (v === SECRET_MASK) {
+          if (prevEnv[k] !== undefined) env[k] = prevEnv[k];
+        } else {
+          env[k] = v;
+        }
+      }
+      merged.env = env;
+    }
+    // Restore a masked URL userinfo when the client round-trips the masked value.
+    if (typeof cfg.url === "string" && typeof prior?.url === "string" && cfg.url === maskUrlSecrets(prior.url)) {
+      merged.url = prior.url;
+    }
+    // Restore masked secrets inside `--flag=secret` args positionally.
+    if (cfg.args && prior?.args && cfg.args.length === prior.args.length) {
+      merged.args = cfg.args.map((arg, i) => (arg === maskArgSecrets(prior.args![i]!) ? prior.args![i]! : arg));
+    }
+    out[name] = merged;
+  }
+  return out;
+}
+
 /** Runtime validation for the PUT /api/mcp body (admin UI saves mcp.json). */
 export const mcpServersSchema = z
   .object({
@@ -58,6 +128,48 @@ export function loadMcpServers(): Record<string, McpServerConfig> {
   }
 }
 
+/** Environment variables forwarded to stdio MCP servers (never secrets). */
+export const MCP_ENV_ALLOWLIST = [
+  "PATH",
+  "HOME",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "SHELL",
+  "USER",
+  "LOGNAME",
+  "TERM",
+  "NODE_PATH",
+  "NVM_DIR",
+  "NVM_BIN",
+  "NVM_INC",
+  "PNPM_HOME",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+  "XDG_CACHE_HOME",
+  "APPDATA",
+  "SystemRoot",
+  "ComSpec",
+  "PATHEXT",
+  "ProgramFiles",
+] as const;
+
+/** Build the child env for a stdio MCP server: safe allowlist + per-server vars. */
+export function buildMcpEnv(
+  parent: NodeJS.ProcessEnv,
+  extra: Record<string, string> = {},
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of MCP_ENV_ALLOWLIST) {
+    const value = parent[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return { ...env, ...extra };
+}
+
 const clients = new Map<string, Client>();
 
 /** Close and forget all connected MCP clients (for config hot-reload). */
@@ -77,16 +189,12 @@ function createTransport(name: string, cfg: McpServerConfig) {
     return new SSEClientTransport(url);
   }
   if (cfg.command) {
-    const parentEnv: Record<string, string> = {};
-    for (const [k, v] of Object.entries(process.env)) {
-      if (v !== undefined) parentEnv[k] = v;
-    }
     const transport = new StdioClientTransport({
       command: cfg.command,
       args: cfg.args ?? [],
-      // Inherit the full environment (the SDK's default is a minimal safe
-      // whitelist that breaks nvm-based npx and servers needing custom vars).
-      env: { ...parentEnv, ...(cfg.env ?? {}) },
+      // Only pass a safe allowlist of parent env (plus the server's own vars) to
+      // stdio servers, so ICLAW secrets never leak into third-party processes.
+      env: buildMcpEnv(process.env, cfg.env),
       stderr: "pipe",
     });
     // Surface child stderr in our logs for diagnostics ("Connection closed" etc.).

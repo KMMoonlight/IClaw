@@ -99,19 +99,16 @@ function bearerEnvApiKeyAuth(name: string, envVars: string[]): ApiKeyAuth {
 const KEY_ENV_VARS = ["ICLAW_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY"];
 
 let models: MutableModels | null = null;
+let registeredIds: string[] = [];
 
-/** Build the single provider, using `ICLAW_MODEL_BASE_URL` when set, else the provider's built-in base URL. */
-function buildCustomProvider(): Provider {
+/** Build one Model descriptor for a given model id (shares the provider config). */
+function buildModel(id: string): Model<any> {
   const cfg = loadConfig();
-  if (!cfg.model.model) {
-    throw new Error("ICLAW_MODEL is required — set the model name in .env");
-  }
-  const spec = PROVIDERS[cfg.model.provider];
   const apiKind = apiKindFor(cfg.model.provider);
   const baseUrl = resolveBaseUrl(cfg.model.provider, cfg.modelBaseUrl);
-  const model: Model<any> = {
-    id: cfg.model.model,
-    name: cfg.model.model,
+  return {
+    id,
+    name: id,
     api: apiKind,
     provider: PROVIDER_ID,
     baseUrl,
@@ -121,7 +118,15 @@ function buildCustomProvider(): Provider {
     contextWindow: cfg.modelContextWindow,
     maxTokens: cfg.modelMaxTokens,
   };
-  return createProvider({
+}
+
+/** Replace the provider with one exposing exactly the given model ids. */
+function rebuildProvider(ids: string[]): void {
+  const cfg = loadConfig();
+  const spec = PROVIDERS[cfg.model.provider];
+  const apiKind = apiKindFor(cfg.model.provider);
+  const baseUrl = resolveBaseUrl(cfg.model.provider, cfg.modelBaseUrl);
+  const provider = createProvider({
     id: PROVIDER_ID,
     name: "Custom",
     baseUrl,
@@ -130,26 +135,57 @@ function buildCustomProvider(): Provider {
         ? bearerEnvApiKeyAuth("API key", KEY_ENV_VARS)
         : envApiKeyAuth("API key", KEY_ENV_VARS),
     },
-    models: [model],
+    models: ids.map(buildModel),
     api: apiImplFor(apiKind),
   }) as unknown as Provider;
+  models!.setProvider(provider);
+  registeredIds = ids;
+}
+
+function defaultModelIds(): string[] {
+  const cfg = loadConfig();
+  if (!cfg.model.model) {
+    throw new Error("ICLAW_MODEL is required — set the model name in .env");
+  }
+  const ids = [cfg.model.model];
+  if (cfg.modelFallback && cfg.modelFallback !== cfg.model.model) ids.push(cfg.modelFallback);
+  return ids;
 }
 
 export function getModels(): MutableModels {
-  if (models) return models;
-  models = createModels();
-  models.setProvider(buildCustomProvider());
+  if (!models) models = createModels();
+  if (registeredIds.length === 0) rebuildProvider(defaultModelIds());
   return models;
+}
+
+/** Register an extra model id on demand (per-user override / fallback). */
+export function ensureModelRegistered(id: string): void {
+  getModels();
+  if (!id || registeredIds.includes(id)) return;
+  rebuildProvider([...registeredIds, id]);
+}
+
+/** Resolve the model for a user: their override when set, else the global model. */
+export function resolveModelFor(user?: { model?: string } | null): Model<any> {
+  const cfg = loadConfig();
+  const id = user?.model?.trim() || cfg.model.model;
+  ensureModelRegistered(id);
+  const model = getModels().getModel(PROVIDER_ID, id);
+  if (!model) throw new Error(`Model not found: ${id} — check ICLAW_MODEL / per-user model`);
+  return model;
 }
 
 /** Resolve the single global model. */
 export function resolveConfiguredModel(): Model<any> {
-  const cfg = loadConfig();
-  const m = getModels().getModel(PROVIDER_ID, cfg.model.model);
-  if (!m) {
-    throw new Error(`Model not found: ${cfg.model.model} — check ICLAW_MODEL in .env`);
-  }
-  return m;
+  return resolveModelFor(null);
+}
+
+/** The configured fallback model, if any. */
+export function resolveFallbackModel(): Model<any> | null {
+  const fallback = loadConfig().modelFallback;
+  if (!fallback) return null;
+  ensureModelRegistered(fallback);
+  return getModels().getModel(PROVIDER_ID, fallback) ?? null;
 }
 
 /** Whether the configured model accepts image input (ICLAW_MODEL_SUPPORTS_IMAGES). */

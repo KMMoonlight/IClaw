@@ -2,13 +2,36 @@ import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "@earendil-works/pi-ai";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 
-import { appendUserMemory, getUser, setUserMemory } from "../db/index.js";
+import { addMemory, clearUserMemories, deleteMemory, findMemoryByContent, getUserDisabledTools, isSkillEnabledGlobally, listMemories, getUserDisabledSkills } from "../db/index.js";
+import { loadConfig } from "../config.js";
+import { withApproval } from "./approvals.js";
+import { buildExecTools } from "./exec-tools.js";
+import { buildMediaTools } from "./media-tools.js";
+import { formatMemories } from "./memory.js";
+import { buildScheduleTools } from "./schedule-tools.js";
 import { getSkill } from "./skills.js";
+import { buildWatchTools } from "./watch-tools.js";
+import { wrapUntrusted } from "./security.js";
+import { assertPublicHost } from "./net-guard.js";
+import { searchEnabled, searchWeb } from "./web-search.js";
 
-const RememberSchema = Type.Object({ fact: Type.String() });
+export { isPrivateHost } from "./net-guard.js";
+
+const MEMORY_KINDS = ["fact", "preference", "event", "profile"] as const;
+
+const RememberSchema = Type.Object({
+  fact: Type.String(),
+  kind: Type.Optional(Type.String()),
+  importance: Type.Optional(Type.Number()),
+});
 type RememberParams = Static<typeof RememberSchema>;
 
-const ForgetSchema = Type.Object({});
+const ForgetSchema = Type.Object({
+  content: Type.Optional(Type.String()),
+});
+type ForgetParams = Static<typeof ForgetSchema>;
+
+const ListMemoriesSchema = Type.Object({});
 
 const ReadSkillSchema = Type.Object({ name: Type.String() });
 type ReadSkillParams = Static<typeof ReadSkillSchema>;
@@ -19,47 +42,100 @@ const WebFetchSchema = Type.Object({
 });
 type WebFetchParams = Static<typeof WebFetchSchema>;
 
-/** `remember` — append a fact to the current user's memory. */
+const WebSearchSchema = Type.Object({
+  query: Type.String(),
+  count: Type.Optional(Type.Number()),
+});
+type WebSearchParams = Static<typeof WebSearchSchema>;
+
+/** `remember` — store a fact/preference about the current user (de-duplicated). */
 function rememberTool(userId: string): AgentTool<typeof RememberSchema> {
   return {
     name: "remember",
     label: "Remember",
-    description: "记住关于当前用户的一条事实，供以后对话使用。",
+    description:
+      "记住关于当前用户的一条事实，供以后对话使用。kind 可选 fact/preference/event/profile，importance 为 0-1 的重要度。",
     parameters: RememberSchema,
     execute: async (_id, params: RememberParams) => {
-      appendUserMemory(userId, params.fact);
-      return { content: [{ type: "text", text: `已记住：${params.fact}` }], details: {} };
+      const fact = params.fact.trim();
+      if (!fact) {
+        return { content: [{ type: "text", text: "没有可记住的内容。" }], details: { isError: true } };
+      }
+      const existing = findMemoryByContent(userId, fact);
+      if (existing) {
+        return { content: [{ type: "text", text: `已记住（已存在）：${fact}` }], details: {} };
+      }
+      const kind = params.kind && (MEMORY_KINDS as readonly string[]).includes(params.kind) ? params.kind : "fact";
+      const importance = Math.min(1, Math.max(0, params.importance ?? 0.5));
+      addMemory(userId, fact, { kind, source: "user", importance });
+      return { content: [{ type: "text", text: `已记住：${fact}` }], details: {} };
     },
   };
 }
 
-/** `forget` — clear the current user's memory. */
+/**
+ * `forget` — delete one memory by content, or clear everything when no content
+ * is given (backwards compatible with the old blanket-forget behaviour).
+ */
 function forgetTool(userId: string): AgentTool<typeof ForgetSchema> {
   return {
     name: "forget",
     label: "Forget",
-    description: "清除关于当前用户的全部记忆。",
+    description: "遗忘关于当前用户的记忆：给定 content 时只删除匹配的那条，否则清空全部记忆。",
     parameters: ForgetSchema,
+    execute: async (_id, params: ForgetParams) => {
+      const content = params.content?.trim();
+      if (content) {
+        const existing = findMemoryByContent(userId, content);
+        if (!existing) {
+          return { content: [{ type: "text", text: `未找到相关记忆：${content}` }], details: {} };
+        }
+        deleteMemory(existing.id);
+        return { content: [{ type: "text", text: `已忘记：${existing.content}` }], details: {} };
+      }
+      clearUserMemories(userId);
+      return { content: [{ type: "text", text: "已清除该用户的全部记忆。" }], details: {} };
+    },
+  };
+}
+
+/** `list_memories` — show everything currently remembered about the user. */
+function listMemoriesTool(userId: string): AgentTool<typeof ListMemoriesSchema> {
+  return {
+    name: "list_memories",
+    label: "List memories",
+    description: "列出当前关于该用户的全部记忆。",
+    parameters: ListMemoriesSchema,
     execute: async () => {
-      setUserMemory(userId, "");
-      return { content: [{ type: "text", text: "已清除该用户的记忆。" }], details: {} };
+      const memories = listMemories(userId);
+      if (memories.length === 0) {
+        return { content: [{ type: "text", text: "（暂无记忆）" }], details: {} };
+      }
+      return { content: [{ type: "text", text: formatMemories(memories) }], details: {} };
     },
   };
 }
 
 /** `read_skill` — load a skill's full instructions on demand. */
-function readSkillTool(): AgentTool<typeof ReadSkillSchema> {
+function readSkillTool(userId: string): AgentTool<typeof ReadSkillSchema> {
   return {
     name: "read_skill",
     label: "Read skill",
     description: "按名称加载一个技能的完整说明（SKILL.md 内容）。",
     parameters: ReadSkillSchema,
     execute: async (_id, params: ReadSkillParams) => {
+      if (!isSkillEnabledGlobally(params.name) || getUserDisabledSkills(userId).includes(params.name)) {
+        return { content: [{ type: "text", text: `技能已停用：${params.name}` }], details: { isError: true } };
+      }
       const skill = getSkill(params.name);
       if (!skill) {
         return { content: [{ type: "text", text: `未找到技能：${params.name}` }], details: {} };
       }
-      return { content: [{ type: "text", text: skill.body }], details: {} };
+      const notes: string[] = [];
+      if (skill.allowedTools?.length) notes.push(`需要的工具：${skill.allowedTools.join(", ")}`);
+      if (skill.requires?.length) notes.push(`运行依赖：${skill.requires.join(", ")}`);
+      const text = notes.length ? `（${notes.join("；")}）\n\n${skill.body}` : skill.body;
+      return { content: [{ type: "text", text }], details: {} };
     },
   };
 }
@@ -73,24 +149,6 @@ const WEB_FETCH_TIMEOUT_MS = 15_000;
 const WEB_FETCH_DEFAULT_MAX_BYTES = 500_000;
 const WEB_FETCH_MAX_REDIRECTS = 3;
 const WEB_FETCH_TEXT_LIMIT = 8_000;
-
-/** Reject hosts that resolve into the local machine / private networks (SSRF guard). */
-export function isPrivateHost(hostname: string): boolean {
-  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  if (host === "localhost" || host.endsWith(".localhost") || host === "" || host === "0.0.0.0" || host === "::" || host === "::1") {
-    return true;
-  }
-  const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (ipv4) {
-    const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
-    if (a === 0 || a === 10 || a === 127) return true;
-    if (a === 169 && b === 254) return true; // link-local + cloud metadata
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
-  }
-  return false;
-}
 
 export function htmlToText(html: string): string {
   return html
@@ -107,14 +165,13 @@ export function htmlToText(html: string): string {
     .trim();
 }
 
-async function fetchUrlWithGuards(rawUrl: string, maxBytes: number): Promise<{ text: string; finalUrl: string; contentType: string }> {
+export async function fetchUrlWithGuards(rawUrl: string, maxBytes: number): Promise<{ text: string; finalUrl: string; contentType: string }> {
   let url = new URL(rawUrl);
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new Error(`不支持的协议：${url.protocol}（只允许 http/https）`);
   }
-  if (isPrivateHost(url.hostname)) {
-    throw new Error(`出于安全考虑，不允许访问内网/本机地址：${url.hostname}`);
-  }
+  // Resolve DNS and reject loopback/private targets before any request (SSRF guard).
+  await assertPublicHost(url.hostname);
 
   let redirects = 0;
   for (;;) {
@@ -133,9 +190,10 @@ async function fetchUrlWithGuards(rawUrl: string, maxBytes: number): Promise<{ t
     if (res.status >= 300 && res.status < 400 && res.headers.get("location")) {
       redirects += 1;
       if (redirects > WEB_FETCH_MAX_REDIRECTS) throw new Error("重定向次数过多");
+      void res.body?.cancel().catch(() => {}); // release the redirect response socket
       url = new URL(res.headers.get("location")!, url);
       if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error(`重定向到不支持的协议：${url.protocol}`);
-      if (isPrivateHost(url.hostname)) throw new Error(`重定向目标为内网地址，已阻止：${url.hostname}`);
+      await assertPublicHost(url.hostname);
       continue;
     }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -172,12 +230,39 @@ function webFetchTool(): AgentTool<typeof WebFetchSchema> {
         const { text, finalUrl } = await fetchUrlWithGuards(params.url, Math.min(maxBytes, 5_000_000));
         const truncated = text.length > WEB_FETCH_TEXT_LIMIT ? `${text.slice(0, WEB_FETCH_TEXT_LIMIT)}\n…（内容过长已截断，完整长度 ${text.length} 字符）` : text;
         return {
-          content: [{ type: "text", text: `[${finalUrl}]\n${truncated || "(empty)"}` }],
+          content: [{ type: "text", text: wrapUntrusted(finalUrl, truncated || "(empty)") }],
           details: {},
         };
       } catch (err) {
         return {
           content: [{ type: "text", text: `web_fetch 失败：${err instanceof Error ? err.message : String(err)}` }],
+          details: { isError: true },
+        };
+      }
+    },
+  };
+}
+
+/** `web_search` — query the configured search backend (only registered when configured). */
+function webSearchTool(): AgentTool<typeof WebSearchSchema> {
+  return {
+    name: "web_search",
+    label: "Web search",
+    description: "联网搜索，返回结果的标题、链接与摘要（用于查找最新信息）。",
+    parameters: WebSearchSchema,
+    execute: async (_id, params: WebSearchParams) => {
+      const query = params.query.trim();
+      if (!query) return { content: [{ type: "text", text: "搜索词不能为空。" }], details: { isError: true } };
+      try {
+        const results = await searchWeb(query, { count: params.count });
+        if (results.length === 0) return { content: [{ type: "text", text: "（没有搜索结果）" }], details: {} };
+        const text = results
+          .map((r, i) => `${i + 1}. ${r.title}\n${r.url}${r.snippet ? `\n${r.snippet}` : ""}`)
+          .join("\n\n");
+        return { content: [{ type: "text", text: wrapUntrusted(`web_search: ${query}`, text) }], details: {} };
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `web_search 失败：${err instanceof Error ? err.message : String(err)}` }],
           details: { isError: true },
         };
       }
@@ -191,9 +276,33 @@ function webFetchTool(): AgentTool<typeof WebFetchSchema> {
  * their side effects land in the right profile.
  */
 export function buildTools(userId: string, extraTools: AgentTool<any>[] = []): AgentTool<any>[] {
-  return [rememberTool(userId), forgetTool(userId), readSkillTool(), webFetchTool(), ...extraTools];
+  const tools: AgentTool<any>[] = [
+    rememberTool(userId),
+    forgetTool(userId),
+    listMemoriesTool(userId),
+    readSkillTool(userId),
+    webFetchTool(),
+    ...buildScheduleTools(userId),
+    ...buildWatchTools(userId),
+    ...buildMediaTools(userId),
+  ];
+  // Exec tools (bash / files) are opt-in and confined to the user's workspace.
+  if (loadConfig().toolsExec) tools.push(...buildExecTools(userId));
+  // Web search is only offered when a backend is configured.
+  if (searchEnabled()) tools.push(webSearchTool());
+  // Per-user tool policy: drop any tool the admin disabled for this user.
+  let disabled = new Set<string>();
+  try {
+    disabled = new Set(getUserDisabledTools(userId));
+  } catch {
+    // DB not ready (e.g. isolated tests) — treat as no policy.
+  }
+  const enabled = [...tools, ...extraTools].filter((t) => !disabled.has(t.name));
+  // Wrap dangerous tools so the user must confirm before they run.
+  const approval = new Set(loadConfig().approvalTools);
+  return enabled.map((t) => (approval.has(t.name) ? withApproval(userId, t) : t));
 }
 
 export function currentUserMemory(userId: string): string {
-  return getUser(userId)?.memory ?? "";
+  return formatMemories(listMemories(userId));
 }

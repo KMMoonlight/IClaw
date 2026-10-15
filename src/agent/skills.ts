@@ -9,18 +9,44 @@ import { logger } from "../logger.js";
 export interface Skill {
   name: string;
   description: string;
+  version?: string;
   body: string;
   path: string;
+  /** Tools the skill declares it needs (frontmatter `allowed-tools`). */
+  allowedTools?: string[];
+  /** Runtime/binary dependencies (frontmatter `requires`). */
+  requires?: string[];
 }
 
-function parseSkillMd(content: string): { name: string; description: string; body: string } {
+/** Parse an inline YAML list value: `key: a, b` or `key: ["a", "b"]`. */
+function parseFrontmatterList(fm: string, key: string): string[] | undefined {
+  const m = fm.match(new RegExp(`^${key}:\\s*(.+?)\\s*$`, "m"));
+  if (!m?.[1]) return undefined;
+  let raw = m[1].trim();
+  if (raw.startsWith("[") && raw.endsWith("]")) raw = raw.slice(1, -1);
+  const items = raw
+    .split(/[,\s]+/)
+    .map((s) => s.trim().replace(/^["']|["']$/g, ""))
+    .filter(Boolean);
+  return items.length ? items : undefined;
+}
+
+function parseSkillMd(content: string): Pick<Skill, "name" | "description" | "version" | "body" | "allowedTools" | "requires"> {
   const m = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---\s*\r?\n?([\s\S]*)$/);
   if (!m) return { name: "", description: "", body: content };
   const fm = m[1] ?? "";
   const body = m[2] ?? "";
   const name = fm.match(/^name:\s*(.+?)\s*$/m)?.[1]?.trim() ?? "";
   const description = fm.match(/^description:\s*(.+?)\s*$/m)?.[1]?.trim() ?? "";
-  return { name, description, body };
+  const version = fm.match(/^version:\s*(.+?)\s*$/m)?.[1]?.trim() ?? "";
+  return {
+    name,
+    description,
+    body,
+    version: version || undefined,
+    allowedTools: parseFrontmatterList(fm, "allowed-tools"),
+    requires: parseFrontmatterList(fm, "requires"),
+  };
 }
 
 function findSkillsInDir(dir: string, out: Skill[]): void {
@@ -37,7 +63,11 @@ function findSkillsInDir(dir: string, out: Skill[]): void {
       if (fs.existsSync(skillMd)) {
         try {
           const parsed = parseSkillMd(fs.readFileSync(skillMd, "utf-8"));
-          out.push({ name: parsed.name || entry.name, description: parsed.description, body: parsed.body, path: skillMd });
+          const skill: Skill = { name: parsed.name || entry.name, description: parsed.description, body: parsed.body, path: skillMd };
+          if (parsed.version) skill.version = parsed.version;
+          if (parsed.allowedTools) skill.allowedTools = parsed.allowedTools;
+          if (parsed.requires) skill.requires = parsed.requires;
+          out.push(skill);
         } catch (err) {
           logger.warn(`skills: failed to read ${skillMd}: ${String(err)}`);
         }
@@ -64,10 +94,15 @@ export function resetSkillsCache(): void {
 }
 
 /** A compact list of skills (name + description) injected into the system prompt. */
-export function skillsPrompt(): string {
-  const skills = loadSkills();
+export function skillsPrompt(disabled?: Iterable<string>): string {
+  const blocked = new Set(disabled ?? []);
+  const skills = loadSkills().filter((s) => !blocked.has(s.name));
   if (skills.length === 0) return "";
-  const lines = skills.map((s) => `- ${s.name}: ${s.description || "(no description)"}`);
+  const lines = skills.map((s) => {
+    const tools = s.allowedTools?.length ? `（需要工具：${s.allowedTools.join(", ")}）` : "";
+    const version = s.version ? ` v${s.version}` : "";
+    return `- ${s.name}${version}: ${s.description || "(no description)"}${tools}`;
+  });
   return `## 可用技能（用 read_skill 工具按需加载完整说明）\n${lines.join("\n")}`;
 }
 
@@ -168,7 +203,11 @@ export async function installSkillFromGithub(input: string): Promise<{ names: st
         entries += 1;
         if (entries > MAX_EXTRACTED_ENTRIES) return false;
         if (entryPath.includes("..") || entryPath.startsWith("/")) return false; // traversal guard
-        if ("type" in entry && entry.type === "File" && (entry.size ?? 0) > MAX_ENTRY_BYTES) return false;
+        const type = "type" in entry ? entry.type : undefined;
+        // Never extract symlinks/hardlinks: a repo could plant one pointing outside
+        // the skills dir (e.g. SKILL.md -> /etc/passwd) that we would later read.
+        if (type === "SymbolicLink" || type === "Link") return false;
+        if (type === "File" && (entry.size ?? 0) > MAX_ENTRY_BYTES) return false;
         return true;
       },
     });

@@ -45,6 +45,13 @@ describe("trimMessages", () => {
     expect(out[0]?.role).toBe("user");
   });
 
+  it("extends backward to a user message when the tail window has none", () => {
+    const msgs = [msg("user", "1"), msg("assistant", "2"), msg("toolResult", "3"), msg("toolResult", "4")];
+    const out = trimMessages(msgs, 2);
+    expect(out[0]?.role).toBe("user");
+    expect(out.map(idOf)).toEqual(["1", "2", "3", "4"]);
+  });
+
   it("ships a sane production cap", () => {
     expect(TRANSCRIPT_MAX_MESSAGES).toBeGreaterThanOrEqual(50);
   });

@@ -9,6 +9,25 @@ const KEYS = [
   "ICLAW_MODEL_CONTEXT_WINDOW",
   "ICLAW_MODEL_MAX_TOKENS",
   "ICLAW_MODEL_SUPPORTS_IMAGES",
+  "ICLAW_MEMORY_AUTO_EXTRACT",
+  "ICLAW_SCHEDULER_ENABLED",
+  "ICLAW_SCHEDULER_INTERVAL_MS",
+  "ICLAW_TOOLS_EXEC",
+  "ICLAW_WORKSPACE_DIR",
+  "ICLAW_EXEC_TIMEOUT_MS",
+  "ICLAW_EXEC_SANDBOX",
+  "ICLAW_EXEC_ALLOW_NETWORK",
+  "ICLAW_APPROVAL_TOOLS",
+  "ICLAW_SEND_CHUNK_CHARS",
+  "ICLAW_STREAM_PROGRESS",
+  "ICLAW_SEND_MEDIA_MAX_BYTES",
+  "ICLAW_USER_DAILY_TOKEN_LIMIT",
+  "ICLAW_USER_RATE_PER_MIN",
+  "ICLAW_MODEL_FALLBACK",
+  "ICLAW_SEND_RETRIES",
+  "ICLAW_OUTBOUND_BLOCKLIST",
+  "ICLAW_OUTBOUND_BLOCK_MESSAGE",
+  "ICLAW_DATA_RETENTION_DAYS",
   "ICLAW_SERVER_PORT",
   "ICLAW_COOKIE_SECURE",
   "ICLAW_STATE_DIR",
@@ -45,12 +64,14 @@ describe("loadConfig", () => {
     setEnv("ICLAW_MODEL_CONTEXT_WINDOW", "");
     setEnv("ICLAW_MODEL_MAX_TOKENS", "");
     setEnv("ICLAW_MODEL_SUPPORTS_IMAGES", "");
+    setEnv("ICLAW_MEMORY_AUTO_EXTRACT", "");
     setEnv("ICLAW_COOKIE_SECURE", "");
     const cfg = loadConfig();
     expect(cfg.model.provider).toBe("openai");
     expect(cfg.modelContextWindow).toBe(128000);
     expect(cfg.modelMaxTokens).toBe(8192);
     expect(cfg.modelSupportsImages).toBe(true);
+    expect(cfg.memoryAutoExtract).toBe(false);
     expect(cfg.cookieSecure).toBe(false);
   });
 
@@ -76,6 +97,61 @@ describe("loadConfig", () => {
     setEnv("ICLAW_MODEL_SUPPORTS_IMAGES", "yes");
     resetConfigCache();
     expect(loadConfig().modelSupportsImages).toBe(true);
+  });
+
+  it("parses the memory auto-extract flag", () => {
+    setEnv("ICLAW_MEMORY_AUTO_EXTRACT", "true");
+    resetConfigCache();
+    expect(loadConfig().memoryAutoExtract).toBe(true);
+    setEnv("ICLAW_MEMORY_AUTO_EXTRACT", "off");
+    resetConfigCache();
+    expect(loadConfig().memoryAutoExtract).toBe(false);
+  });
+
+  it("parses scheduler enablement and interval", () => {
+    setEnv("ICLAW_SCHEDULER_ENABLED", "false");
+    setEnv("ICLAW_SCHEDULER_INTERVAL_MS", "5000");
+    resetConfigCache();
+    expect(loadConfig().schedulerEnabled).toBe(false);
+    expect(loadConfig().schedulerIntervalMs).toBe(5000);
+  });
+
+  it("parses exec tool settings", () => {
+    setEnv("ICLAW_TOOLS_EXEC", "true");
+    setEnv("ICLAW_EXEC_TIMEOUT_MS", "15000");
+    setEnv("ICLAW_WORKSPACE_DIR", "./ws");
+    resetConfigCache();
+    expect(loadConfig().toolsExec).toBe(true);
+    expect(loadConfig().execTimeoutMs).toBe(15000);
+    expect(loadConfig().workspaceDir).toBe("./ws");
+    expect(loadConfig().execSandbox).toBe("auto");
+    expect(loadConfig().execAllowNetwork).toBe(false);
+  });
+
+  it("validates the sandbox mode enum", () => {
+    setEnv("ICLAW_EXEC_SANDBOX", "required");
+    setEnv("ICLAW_EXEC_ALLOW_NETWORK", "yes");
+    resetConfigCache();
+    expect(loadConfig().execSandbox).toBe("required");
+    expect(loadConfig().execAllowNetwork).toBe(true);
+    setEnv("ICLAW_EXEC_SANDBOX", "bogus");
+    resetConfigCache();
+    expect(loadConfig().execSandbox).toBe("auto");
+  });
+
+  it("defaults to no approval — every tool executes directly", () => {
+    setEnv("ICLAW_APPROVAL_TOOLS", undefined);
+    resetConfigCache();
+    expect(loadConfig().approvalTools).toEqual([]);
+  });
+
+  it("parses the approval tool list (empty disables approval)", () => {
+    setEnv("ICLAW_APPROVAL_TOOLS", "bash, write_file");
+    resetConfigCache();
+    expect(loadConfig().approvalTools).toEqual(["bash", "write_file"]);
+    setEnv("ICLAW_APPROVAL_TOOLS", "");
+    resetConfigCache();
+    expect(loadConfig().approvalTools).toEqual([]);
   });
 
   it("caches the config until reset", () => {

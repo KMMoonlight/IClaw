@@ -13,6 +13,7 @@
     "start": "node dist/server/index.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "eval": "tsx src/eval/run.ts",
     "web:dev": "vite --config vite.config.ts",
     "web:build": "vite build --config vite.config.ts",
     "login": "tsx src/cli.ts login",

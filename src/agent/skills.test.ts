@@ -82,6 +82,31 @@ describe("loadSkills", () => {
     expect(skillsPrompt()).toContain("- listed: for the prompt");
     expect(skillsPrompt()).toContain("read_skill");
   });
+
+  it("parses declared allowed-tools and requires", () => {
+    writeSkill(
+      "with-deps",
+      "---\nname: with-deps\ndescription: d\nallowed-tools: bash, read_file\nrequires: [git, node]\n---\nbody",
+    );
+    const skill = getSkill("with-deps")!;
+    expect(skill.allowedTools).toEqual(["bash", "read_file"]);
+    expect(skill.requires).toEqual(["git", "node"]);
+    expect(skillsPrompt()).toContain("需要工具：bash, read_file");
+  });
+
+  it("parses a version from frontmatter and shows it", () => {
+    writeSkill("versioned", "---\nname: versioned\nversion: 1.2.0\ndescription: d\n---\nbody");
+    expect(getSkill("versioned")?.version).toBe("1.2.0");
+    expect(skillsPrompt()).toContain("- versioned v1.2.0: d");
+  });
+
+  it("omits disabled skills from the prompt listing", () => {
+    writeSkill("visible", "---\nname: visible\ndescription: d\n---\nb");
+    writeSkill("hidden", "---\nname: hidden\ndescription: d\n---\nb");
+    const prompt = skillsPrompt(["hidden"]);
+    expect(prompt).toContain("visible");
+    expect(prompt).not.toContain("- hidden");
+  });
 });
 
 describe("parseGithubRepo", () => {

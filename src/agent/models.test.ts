@@ -1,7 +1,7 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { resetConfigCache } from "../config.js";
-import { PROVIDERS, resolveBaseUrl, supportsImages } from "./models.js";
+import { PROVIDERS, resolveBaseUrl, resolveFallbackModel, resolveModelFor, supportsImages } from "./models.js";
 
 const KEY = "ICLAW_MODEL_SUPPORTS_IMAGES";
 const saved = process.env[KEY];
@@ -39,5 +39,31 @@ describe("supportsImages", () => {
     process.env[KEY] = "true";
     resetConfigCache();
     expect(supportsImages()).toBe(true);
+  });
+});
+
+describe("resolveModelFor", () => {
+  const savedModel = process.env.ICLAW_MODEL;
+  const savedFallback = process.env.ICLAW_MODEL_FALLBACK;
+
+  beforeAll(() => {
+    process.env.ICLAW_MODEL = "test-primary";
+    process.env.ICLAW_MODEL_FALLBACK = "test-fallback";
+    resetConfigCache();
+  });
+
+  afterAll(() => {
+    if (savedModel === undefined) delete process.env.ICLAW_MODEL;
+    else process.env.ICLAW_MODEL = savedModel;
+    if (savedFallback === undefined) delete process.env.ICLAW_MODEL_FALLBACK;
+    else process.env.ICLAW_MODEL_FALLBACK = savedFallback;
+    resetConfigCache();
+  });
+
+  it("resolves the global, per-user and fallback models", () => {
+    expect(resolveModelFor(null).id).toBe("test-primary");
+    expect(resolveModelFor({ model: "" }).id).toBe("test-primary");
+    expect(resolveModelFor({ model: "test-alt" }).id).toBe("test-alt");
+    expect(resolveFallbackModel()?.id).toBe("test-fallback");
   });
 });

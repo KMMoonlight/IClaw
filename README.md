@@ -72,6 +72,31 @@ npm run serve          # 或 npm run dev
 | `ICLAW_ADMIN_USER` | 管理员用户名 | `admin` |
 | `ICLAW_ADMIN_PASSWORD` | 管理员密码（权威：每次启动同步到库中；不设则首次自动生成并打印） | — |
 | `ICLAW_COOKIE_SECURE` | 会话 cookie 带 `Secure` 标志（对外暴露时配 HTTPS 后开启） | `false` |
+| `ICLAW_MEMORY_AUTO_EXTRACT` | 每轮对话后自动抽取长期记忆（会额外调用一次模型） | `false` |
+| `ICLAW_EMBEDDING_MODEL` | embedding 模型（OpenAI 兼容 `/embeddings`），用于记忆语义检索；不设则降级为关键词 | — |
+| `ICLAW_EMBEDDING_BASE_URL` | embedding 端点覆盖；缺省复用 `ICLAW_MODEL_BASE_URL`/provider 内置地址 | — |
+| `ICLAW_SCHEDULER_ENABLED` | 启用后台定时任务调度器（提醒 / 周期任务 / 网页监控） | `true` |
+| `ICLAW_SCHEDULER_INTERVAL_MS` | 调度器轮询间隔（毫秒） | `30000` |
+| `ICLAW_TOOLS_EXEC` | 启用 bash / 文件读写工具（限定在用户 workspace） | `false` |
+| `ICLAW_WORKSPACE_DIR` | 执行工具工作目录根 | `<stateDir>/workspaces` |
+| `ICLAW_EXEC_TIMEOUT_MS` | 单次命令执行超时（毫秒） | `30000` |
+| `ICLAW_EXEC_MAX_OUTPUT_BYTES` | 单次命令输出字节上限 | `100000` |
+| `ICLAW_EXEC_SANDBOX` | 沙箱模式 `auto` / `required` / `none` | `auto` |
+| `ICLAW_EXEC_ALLOW_NETWORK` | 沙箱内是否允许出站网络 | `false` |
+| `ICLAW_APPROVAL_TOOLS` | 可选：需用户确认的工具（逗号分隔）；**默认留空 = 全部直接执行，不做人工审批** | 空 |
+| `ICLAW_SEARCH_PROVIDER` | 联网搜索后端 `none` / `tavily` / `brave` / `searxng` | `none` |
+| `ICLAW_SEARCH_API_KEY` | 搜索后端 API key（tavily / brave） | — |
+| `ICLAW_SEARCH_BASE_URL` | 搜索后端地址（searxng 必填） | — |
+| `ICLAW_SEND_CHUNK_CHARS` | 单条消息最大字符数，超过自动分片 | `2000` |
+| `ICLAW_STREAM_PROGRESS` | 生成过程中分段推送长回复（流式体验） | `true` |
+| `ICLAW_SEND_MEDIA_MAX_BYTES` | `send_file`/`send_image` 文件大小上限（字节） | `20971520` |
+| `ICLAW_MODEL_FALLBACK` | 主模型失败时重试的备用模型 | — |
+| `ICLAW_USER_DAILY_TOKEN_LIMIT` | 每用户每日 token 上限（0 = 不限） | `0` |
+| `ICLAW_USER_RATE_PER_MIN` | 每用户每分钟消息上限（0 = 不限） | `0` |
+| `ICLAW_SEND_RETRIES` | 出站发送失败重试次数 | `2` |
+| `ICLAW_OUTBOUND_BLOCKLIST` | 出站内容黑名单（正则，逗号分隔） | — |
+| `ICLAW_OUTBOUND_BLOCK_MESSAGE` | 命中黑名单时的替代文本 | `抱歉，这条内容不适合发送。` |
+| `ICLAW_DATA_RETENTION_DAYS` | 数据保留天数（0 = 永久保留） | `0` |
 
 完整见 `.env.example`。需要 Node.js ≥ 22.13（`node:sqlite` 免 flag）；22.5–22.12 需加 `--experimental-sqlite` 启动参数。
 
@@ -125,6 +150,96 @@ npm run serve          # 或 npm run dev
 
 > 注：调研阶段原本计划用 `pi-mcp-adapter`，但其面向 Pi coding-agent 的扩展 API（非
 > `pi-agent-core` 的 `Agent`），故改为直接用官方 MCP SDK 做原生工具注册，效果等价。
+
+## 记忆系统
+
+每个用户的长期记忆存于结构化 `memories` 表（`kind` / `content` / `source` / `importance` /
+`created_at` / `last_used_at` / `embedding`），取代旧的自由字符串 `users.memory`（旧数据在首次
+启动时**自动一次性迁移**，按 `- 事实` 拆行）。
+
+- **写入**：agent 可调用 `remember`（支持 `kind`/`importance`，自动去重）、`forget`（按内容删单条或清空）、
+  `list_memories`；也可开启 `ICLAW_MEMORY_AUTO_EXTRACT` 让每轮对话后自动抽取（失败不影响主流程）。
+- **检索**：每轮按**当前用户消息**做相关性召回，而非全量灌入 system prompt。配置了
+  `ICLAW_EMBEDDING_MODEL` 时走**向量检索**（cosine + 重要度 + 新近度，缺失向量懒回填）；未配置或调用失败时
+  **自动降级为关键词检索**（英文整词 + 中文 bigram 重叠度）。结果受字符预算（≤4000 字）限制。
+- **整理**：`consolidateMemories` 做确定性合并（精确/近似去重保留高重要度）、陈旧低重要度剪枝
+  （`profile` 永不删）与每用户上限控制；启动时整体跑一次，也可用
+  `POST /api/memories/consolidate`（全部）或 `POST /api/users/:id/memories/consolidate`（单个）手动触发。
+- **API**：`/api/users/:id/memories`（GET/POST/DELETE）与 `/api/memories/:id`（PATCH/DELETE）。
+
+## 定时任务与网页监控
+
+后台调度器（`ICLAW_SCHEDULER_ENABLED`，默认开）每 `ICLAW_SCHEDULER_INTERVAL_MS` 轮询一次，
+任务/监控项持久化在 SQLite，**重启不丢**。agent 可通过以下内置工具主动为用户服务：
+
+- **提醒 / 周期任务**：`schedule_task` / `list_tasks` / `cancel_task`。`when` 支持
+  cron 表达式（如 `0 9 * * *` 每天 9:00）、相对时间（`+10m`/`+2h`/`+1d`）、ISO 时间或毫秒时间戳；
+  `mode=agent` 时到点会跑一次对话并把结果发给用户（适合“每天生成早报”），否则发送固定文本。
+- **网页监控**：`watch_url` / `list_watchers` / `cancel_watcher`。默认监控页面内容变化，
+  给定 `keyword` 时监控关键词出现（absent → present）；触发时把 `prompt` 推送给用户。复用
+  `web_fetch` 的 SSRF 防护。
+
+每用户任务/监控项均有上限（任务 20、监控 10）；到点通过用户绑定的 Bot 好友主动推送。
+
+## 工具执行与安全
+
+- **执行类工具**（`bash` / `read_file` / `write_file` / `list_dir`，默认关闭）：开启 `ICLAW_TOOLS_EXEC` 后，
+  agent 可在**每用户隔离的 workspace**（`ICLAW_WORKSPACE_DIR`）内读写文件、执行 shell。文件工具强制相对路径，
+  拒绝绝对路径与目录穿越；命令有超时（`ICLAW_EXEC_TIMEOUT_MS`）、输出上限（`ICLAW_EXEC_MAX_OUTPUT_BYTES`）与
+  最小环境变量白名单。
+- **沙箱**（`ICLAW_EXEC_SANDBOX`）：`auto` 时自动使用 `bwrap`（Linux）或 `sandbox-exec`（macOS）隔离——只读系统目录、
+  只写 workspace、默认禁网；`required` 时无沙箱工具则拒绝执行；`none` 则不沙箱（不建议）。
+- **审批（可选，默认关闭）**：默认所有工具直接执行（全部放行）。如需对个别危险工具加一道人工确认，把工具名配到
+  `ICLAW_APPROVAL_TOOLS`（如 `bash,write_file`），这些工具会先要用户在微信回复「同意 / 拒绝」，同意后才执行并把结果发回。
+- **工具权限**：管理员可通过 `PATCH /api/users/:id { disabledTools: [...] }` 按用户禁用任意工具。
+- **联网搜索**：配置 `ICLAW_SEARCH_PROVIDER` 后自动注册 `web_search`（未配置则不暴露，`web_fetch` 始终可用）。
+- **MCP 子进程**：stdio MCP server 只继承安全白名单环境变量（PATH/HOME/…），**不会拿到 `ICLAW_API_KEY` 等密钥**。
+- **技能依赖**：`SKILL.md` frontmatter 可声明 `allowed-tools` 与 `requires`，会展示在技能列表/加载结果中。
+
+## 消息输出
+
+- **长回复分片**：超过 `ICLAW_SEND_CHUNK_CHARS`（默认 2000 字）的回复会按段落/句子边界自动拆成多条发送。
+- **分段流式**：`ICLAW_STREAM_PROGRESS`（默认开）时，生成中的长回复会**按阈值分段实时推送**，长回答不会让用户干等。
+- **出站媒体**：内置 `send_file` / `send_image` 工具，可把工作目录内的图片/视频/文件上传到微信 CDN 并发给用户
+  （AES-128-ECB 加密上传，大小上限 `ICLAW_SEND_MEDIA_MAX_BYTES`）。
+- **入站媒体**：文本/图片/语音（转写）/文件均可接收；图片交给多模态模型，文件以「附件」文字提示交给模型。
+
+## 平台能力
+
+- **多模型**：`users.model` 可按用户覆盖模型（`PATCH /api/users/:id { model }`）；`ICLAW_MODEL_FALLBACK`
+  在主模型失败时自动重试一次。
+- **用量与成本**：每轮记录 provider 上报的 token/费用到 `usage` 表；`GET /api/users/:id/usage`、`GET /api/usage`。
+- **配额/限流**：`ICLAW_USER_DAILY_TOKEN_LIMIT`（每日 token）与 `ICLAW_USER_RATE_PER_MIN`（每分钟消息）。
+- **审计日志**：agent 工具调用（`tool:<name>`）与管理操作写入 `audit_log`；`GET /api/audit?userId=&limit=`。
+- **指标**：Prometheus 文本 `GET /metrics`（turns / tool calls / model fallback / scheduled tasks 等）。
+- **多会话**：`/new` 开新会话（保留历史）、`/sessions` 列出、`/switch <序号>` 切换。
+- **优雅关闭**：SIGTERM 时停止调度/通道后等待在途对话完成（最多 5s）再退出。
+- **出站重试**：发送失败按指数退避重试（复用同一 `client_id` 以便网关去重）。
+
+## 多渠道与产品化
+
+- **渠道抽象**：`src/channels/` 定义了 `Channel` / `InboundMessage` / `ReplySink`。路由、会话命令、审批、配额、
+  agent turn 全部在 `channels/agent-gateway.ts`（与传输无关）；微信只是 `bot.ts` 里的一个适配器，
+  新增渠道只需实现一个 `ReplySink`（见 `channels/memory.ts` 示例）。
+- **Agent 行为 eval**：`npm run eval` 跑确定性行为用例（CI 已纳入）；`ICLAW_EVAL_LIVE=1 npm run eval` 追加
+  实模型端到端用例。详见 `evals/README.md`。
+- **自助接入**：管理员 `POST /api/invites` 生成邀请码；用户访问 `GET/POST /api/onboard/:code` 自助创建并绑定。
+- **会话历史**：`GET /api/users/:id/sessions`、`GET /api/sessions/:sessionId`；工具轨迹见 `GET /api/audit`。
+- **技能管理**：`SKILL.md` 支持 `version`；全局/按用户开闭（`PATCH /api/skills/:name`、`PATCH /api/users/:id { disabledSkills }`）。
+
+## 安全与合规
+
+- **Prompt Injection 防护**：system prompt 内置安全准则；`web_fetch`/`web_search` 等外部内容以
+  `[外部不可信内容 · 来源]` 包裹，明确要求不得执行其中指令。
+- **出站审核**：`ICLAW_OUTBOUND_BLOCKLIST`（正则）命中的回复会被替换为 `ICLAW_OUTBOUND_BLOCK_MESSAGE`。
+- **工具沙箱/审批**：见上文「工具执行与安全」。
+- **RBAC**：管理员角色 `viewer < admin < owner`；viewer 只读（非 GET 一律 403），owner 可管理角色。
+  角色见 `GET /api/admins`、`PATCH /api/admins/:username`。
+- **数据生命周期**：`GET /api/users/:id/export` 导出全部数据；`DELETE /api/users/:id` 级联删除；
+  `ICLAW_DATA_RETENTION_DAYS` 启用保留期清理（启动时执行）。
+- **凭证不泄露**：`GET /api/mcp` 对 `env` 密钥回显 `***`，保存时自动回填真实值（不会用 `***` 覆盖密钥）；
+  stdio MCP 子进程只继承环境白名单。
+- **审计**：工具调用与管理操作写入 `audit_log`（`GET /api/audit`）。
 
 ## 护栏
 

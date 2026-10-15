@@ -2,9 +2,10 @@
 import fs from "node:fs";
 
 import { getUpdates, classifyFetchError } from "./api.js";
-import { findImageItem, weixinMessageToContext } from "./inbound.js";
+import { buildMediaNote, findMediaItem, isImageMedia, weixinMessageToContext } from "./inbound.js";
 import type { InboundContext } from "./inbound.js";
-import { downloadImageFromItem } from "./media-download.js";
+import { downloadFileFromItem, downloadImageFromItem } from "./media-download.js";
+import { MessageItemType } from "./types.js";
 import { setContextToken } from "./context-token.js";
 import { getSyncBufFilePath, loadGetUpdatesBuf, saveGetUpdatesBuf } from "./sync-buf.js";
 import { logger } from "../logger.js";
@@ -89,12 +90,26 @@ export async function monitorWeixin(opts: MonitorOpts): Promise<void> {
         if (msg.context_token) setContextToken(accountId, from, msg.context_token);
 
         let media: InboundContext["media"];
-        const imageItem = findImageItem(msg.item_list);
-        if (imageItem) {
-          media = (await downloadImageFromItem(imageItem, cdnBaseUrl)) ?? undefined;
+        const mediaItem = findMediaItem(msg.item_list);
+        if (mediaItem) {
+          media =
+            (mediaItem.type === MessageItemType.IMAGE
+              ? await downloadImageFromItem(mediaItem, cdnBaseUrl)
+              : await downloadFileFromItem(mediaItem, cdnBaseUrl)) ?? undefined;
         }
 
         const ctx = weixinMessageToContext(msg, accountId, media);
+        // Non-image attachments are surfaced to the model as a text note.
+        if (ctx.media && !isImageMedia(ctx.media)) {
+          let size: number | undefined;
+          try {
+            size = fs.statSync(ctx.media.path).size;
+          } catch {
+            size = undefined;
+          }
+          const note = buildMediaNote(ctx.media, size);
+          ctx.body = ctx.body ? `${note}\n${ctx.body}` : note;
+        }
         aLog.info(`inbound from=${from} body=${ctx.body.slice(0, 80)} media=${Boolean(media)}`);
         try {
           await onMessage(ctx);

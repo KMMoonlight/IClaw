@@ -28,7 +28,14 @@ function persist(accountId: string): void {
   const fp = filePath(accountId);
   try {
     fs.mkdirSync(path.dirname(fp), { recursive: true });
-    fs.writeFileSync(fp, JSON.stringify(tokens), "utf-8");
+    // Context tokens are session credentials — keep the file owner-only.
+    fs.writeFileSync(fp, JSON.stringify(tokens), { encoding: "utf-8", mode: 0o600 });
+    // `mode` only applies on creation; tighten pre-existing files too.
+    try {
+      fs.chmodSync(fp, 0o600);
+    } catch {
+      // best-effort (e.g. platform without chmod semantics)
+    }
   } catch (err) {
     logger.warn(`persistContextTokens: ${String(err)}`);
   }

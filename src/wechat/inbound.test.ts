@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { bodyFromItemList, findImageItem, isMediaItem, weixinMessageToContext } from "./inbound.js";
+import { bodyFromItemList, buildMediaNote, findImageItem, findMediaItem, isImageMedia, isMediaItem, weixinMessageToContext } from "./inbound.js";
 import { MessageItemType } from "./types.js";
 import type { MessageItem, WeixinMessage } from "./types.js";
 
@@ -54,6 +54,30 @@ describe("findImageItem", () => {
     const list = [textItem("x"), { type: MessageItemType.IMAGE }, { type: MessageItemType.IMAGE }];
     expect(findImageItem(list)).toBe(list[1]);
     expect(findImageItem([textItem("x")])).toBeUndefined();
+  });
+});
+
+describe("findMediaItem", () => {
+  it("finds the first media item of any kind", () => {
+    const list = [textItem("x"), { type: MessageItemType.FILE }, { type: MessageItemType.IMAGE }];
+    expect(findMediaItem(list)).toBe(list[1]);
+    expect(findMediaItem([textItem("x")])).toBeUndefined();
+  });
+});
+
+describe("isImageMedia / buildMediaNote", () => {
+  it("detects image media", () => {
+    expect(isImageMedia({ path: "/p", type: "image/*" })).toBe(true);
+    expect(isImageMedia({ path: "/p", type: "text/plain" })).toBe(false);
+  });
+
+  it("builds a note from a non-image attachment", () => {
+    expect(buildMediaNote({ path: "/p", type: "application/pdf", fileName: "a.pdf" }, 1234)).toBe(
+      "[收到附件：a.pdf，1234 字节，已保存到服务器。]",
+    );
+    expect(buildMediaNote({ path: "/p", type: "application/octet-stream" })).toBe(
+      "[收到附件：附件，已保存到服务器。]",
+    );
   });
 });
 
